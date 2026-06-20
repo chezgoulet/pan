@@ -1,0 +1,7 @@
+[plugin]
+name = "plugin.echo.tinygo"
+version = "0.1.0"
+
+[capabilities]
+provides = ["echo"]
+needs = []

@@ -1,0 +1,8 @@
+[package]
+name = "pan-containment-test"
+version = "0.1.0"
+edition = "2021"
+description = "Sandbox containment test — proves wasmtime prevents rogue Wasm memory access"
+
+[dependencies]
+wasmtime = { version = "24", default-features = false, features = ["cranelift"] }

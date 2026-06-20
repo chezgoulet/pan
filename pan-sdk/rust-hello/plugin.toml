@@ -1,0 +1,7 @@
+[plugin]
+name = "plugin.hello.rust"
+version = "0.1.0"
+
+[capabilities]
+provides = ["greet"]
+needs = []
