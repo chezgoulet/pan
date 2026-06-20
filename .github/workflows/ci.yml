@@ -28,9 +28,11 @@ jobs:
 
       - name: Format
         run: cargo fmt --all --check
+        working-directory: pan-core
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+        working-directory: pan-core
 
   # ─── Wave 0 — core substrate ──────────────────────────────────────
   wave-0:
