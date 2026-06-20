@@ -1,0 +1,21 @@
+[package]
+name = "pan-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "The irreducible Pan core: vocabulary, dispatch pipeline, loop, event stream, plugin lifecycle."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/youruser/pan"
+keywords = ["agent", "plugin", "provider", "pipeline"]
+categories = ["data-structures"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[example]]
+name = "walkthrough"
+path = "examples/walkthrough.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
