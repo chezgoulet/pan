@@ -95,7 +95,7 @@ mod tests {
         // Wire the event stream with an in-memory sink we can inspect.
         let sink = MemorySink::new();
         let events_handle = sink.handle();
-        let (stream, guard) = EventStream::spawn(sink);
+        let mut stream = EventStream::spawn(sink);
 
         // Always-allow govern stage + echo executor = the trivial end-to-end path.
         let pipeline = Pipeline {
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
 
         // Close the stream and join the consumer so all events are collected.
-        stream.shutdown(guard);
+        stream.shutdown();
 
         // "...and sees the event on the stream." Assert the Effected event landed.
         let events = events_handle.lock().unwrap();
@@ -180,7 +180,7 @@ mod tests {
 
         // A trigger that satisfies all three (the rules provider needs a Signal).
         for p in &providers {
-            let (stream, guard) = EventStream::spawn(MemorySink::new());
+            let mut stream = EventStream::spawn(MemorySink::new());
             let pipeline = Pipeline { registry: &reg, governor: &AllowAll,
                 executor: &EchoExecutor, events: &stream };
             let lp = Loop { provider: p.as_ref(), pipeline: &pipeline, events: &stream };
@@ -188,7 +188,7 @@ mod tests {
                 trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } }));
             let report = lp.run_span(&mut obs, &Context::default());
             assert!(report.end.is_some(), "provider {} produced no terminal state", p.id());
-            stream.shutdown(guard);
+            stream.shutdown();
         }
     }
 }

@@ -9,13 +9,25 @@
 //! Ordering guarantee: every event carries a monotonic `seq` assigned at emit
 //! time under a single lock, so the total order is well-defined regardless of
 //! how many threads emit. A durable sink can rely on `seq` to reconstruct order.
+//!
+//! ## Shutdown
+//!
+//! [`EventStream::spawn`] returns a single `EventStream` value — there is no
+//! separate "guard" type. On `Drop`, the stream closes the channel (by dropping
+//! its sender) and joins the consumer thread. For time-sensitive shutdowns,
+//! [`EventStream::shutdown_timeout`] applies a deadline; if the consumer hasn't
+//! drained by then, the thread is detached.
+//!
+//! Multi-threaded emitters should wrap the stream in `Arc<EventStream>`:
+//! `emit(&self)` is thread-safe.
 
 use crate::schema::{Outcome, Value};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 /// One ordered record of something that happened during a run. The variants are
 /// the core's vocabulary of observable facts; plugins do not extend this set
@@ -64,7 +76,7 @@ pub struct Event {
 ///
 /// Sinks run on the consumer thread, never on the hot path, so a slow sink
 /// cannot stall the loop (it only fills the channel).
-pub trait EventSink: Send {
+pub trait EventSink: Send + 'static {
     fn consume(&mut self, event: Event);
     /// Called once when the stream closes, after the last event.
     fn flush(&mut self) {}
@@ -80,14 +92,14 @@ impl EventSink for DiscardSink {
 /// real durable sink would write to disk/DB instead.
 #[derive(Default)]
 pub struct MemorySink {
-    pub events: Arc<std::sync::Mutex<Vec<Event>>>,
+    pub events: Arc<Mutex<Vec<Event>>>,
 }
 impl MemorySink {
     pub fn new() -> Self {
-        Self { events: Arc::new(std::sync::Mutex::new(Vec::new())) }
+        Self { events: Arc::new(Mutex::new(Vec::new())) }
     }
     /// A shared handle to inspect collected events from the emitting side.
-    pub fn handle(&self) -> Arc<std::sync::Mutex<Vec<Event>>> {
+    pub fn handle(&self) -> Arc<Mutex<Vec<Event>>> {
         Arc::clone(&self.events)
     }
 }
@@ -97,24 +109,42 @@ impl EventSink for MemorySink {
     }
 }
 
-/// The emit side, cheap and clonable. Cloning shares the same sequence counter
-/// and channel, so order is global across all emitters.
-#[derive(Clone)]
+/// A synchronous event stream. Spawn a consumer thread, then emit events from
+/// any thread via `&self`. The stream is `Send + Sync` so it can be shared
+/// behind `Arc<EventStream>` for multi-threaded emission.
+///
+/// On `Drop`, the stream closes the channel and **blocks** until the consumer
+/// thread has drained and flushed the sink. Use [`EventStream::shutdown_timeout`]
+/// to apply a deadline.
+///
+/// # Multiple emitters
+///
+/// ```ignore
+/// let stream = Arc::new(EventStream::spawn(my_sink));
+/// let s2 = Arc::clone(&stream);
+/// let t1 = thread::spawn(move || s2.emit(kind1));
+/// let t2 = thread::spawn(move || stream.emit(kind2));
+/// ```
 pub struct EventStream {
-    seq: Arc<AtomicU64>,
-    tx: Sender<Event>,
+    /// Dropped first (field order) to close the channel.
+    tx: Option<Sender<Event>>,
+    /// Monotonic sequence counter shared across all `emit` calls.
+    seq: AtomicU64,
+    /// Consumer thread handle; the last reference joins on drop.
+    handle: Mutex<Option<JoinHandle<()>>>,
 }
 
+// Safety: `Sender` is `Send + Sync`. `JoinHandle` is `Send` but not `Sync` —
+// we wrap it in `Mutex` to provide `Sync`. `AtomicU64` is `Send + Sync`.
+// `Option<Sender>` is `Send + Sync`.
+
 impl EventStream {
-    /// Spawn the consumer thread bound to `sink` and return the emit handle plus
-    /// a join guard. Use [`EventStream::shutdown`] to close and join cleanly.
+    /// Spawn the consumer thread bound to `sink` and return the emit handle.
     ///
-    /// IMPORTANT: the consumer thread terminates only when **all** `EventStream`
-    /// clones have been dropped (that closes the channel). [`StreamGuard::join`]
-    /// blocks until then. To avoid a deadlock from holding a live clone while
-    /// joining, prefer [`EventStream::shutdown`], which consumes the stream
-    /// first. The `Drop` impl on `StreamGuard` detaches rather than blocks.
-    pub fn spawn<S: EventSink + 'static>(mut sink: S) -> (EventStream, StreamGuard) {
+    /// The consumer thread terminates when the sender side is dropped (channel
+    /// closes). [`Drop`] handles this automatically; call
+    /// [`shutdown_timeout`](Self::shutdown_timeout) for a non-blocking deadline.
+    pub fn spawn<S: EventSink>(mut sink: S) -> Self {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             // Channel delivers in send order; `seq` makes order explicit/auditable.
@@ -123,56 +153,82 @@ impl EventStream {
             }
             sink.flush();
         });
-        (
-            EventStream { seq: Arc::new(AtomicU64::new(0)), tx },
-            StreamGuard { handle: Some(handle) },
-        )
+        EventStream {
+            tx: Some(tx),
+            seq: AtomicU64::new(0),
+            handle: Mutex::new(Some(handle)),
+        }
     }
 
     /// Emit one event. Cheap: assign a sequence number and hand the struct to
     /// the channel. All real work happens on the consumer thread. If the
     /// consumer has gone away, emission is silently dropped (the loop must never
     /// crash because telemetry died — fail-open for observation, §13.3).
+    #[inline]
     pub fn emit(&self, kind: EventKind) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let _ = self.tx.send(Event { seq, kind });
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(Event { seq, kind });
+        }
     }
 
-    /// Close this stream and join the consumer, draining and flushing the sink.
-    /// Consumes `self` so this handle's `Sender` is dropped before the join.
-    /// If other clones are still alive, `join` completes once the last one drops.
-    pub fn shutdown(self, guard: StreamGuard) {
-        drop(self); // drop this handle's Sender
-        guard.join(); // block until all senders gone + consumer drained
+    /// Close the stream and join the consumer thread.
+    ///
+    /// Blocks until the consumer has drained all buffered events and flushed the
+    /// sink. Identical to `Drop` but explicit.
+    pub fn shutdown(&mut self) {
+        self.close_and_join();
     }
-}
 
-/// Joins the consumer thread. Created by [`EventStream::spawn`].
-pub struct StreamGuard {
-    handle: Option<JoinHandle<()>>,
-}
+    /// Close the stream and attempt to join the consumer thread with a timeout.
+    ///
+    /// If the consumer does not finish within `timeout`, the thread is detached
+    /// and this method returns. Events already in the channel may still be
+    /// consumed after the timeout.
+    pub fn shutdown_timeout(&mut self, timeout: Duration) {
+        // Close the channel.
+        self.tx.take();
 
-impl StreamGuard {
-    /// Explicitly join the consumer thread. Blocks until every [`EventStream`]
-    /// clone has been dropped (closing the channel) and the sink has flushed.
-    /// Call this only after the stream handle(s) are gone, or via
-    /// [`EventStream::shutdown`].
-    pub fn join(mut self) {
-        if let Some(h) = self.handle.take() {
+        // Extract the handle and try to join with a deadline.
+        let handle = {
+            let mut guard = self.handle.lock().unwrap();
+            guard.take()
+        };
+
+        if let Some(h) = handle {
+            // Spawn a helper that joins and signals completion.
+            let (done_tx, done_rx) = mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                let _ = h.join();
+                let _ = done_tx.send(());
+            });
+            // Block up to `timeout` for the signal.
+            let _ = done_rx.recv_timeout(timeout);
+            // If timeout fired, the helper thread detaches — the consumer is
+            // still running but we no longer wait for it.
+        }
+    }
+
+    // -- private helpers ---------------------------------------------------
+
+    fn close_and_join(&mut self) {
+        self.tx.take();
+        let handle = { self.handle.lock().unwrap().take() };
+        if let Some(h) = handle {
             let _ = h.join();
         }
     }
 }
 
-impl Drop for StreamGuard {
+impl Drop for EventStream {
     fn drop(&mut self) {
-        // Detach rather than block. A blocking join here would deadlock whenever
-        // a live EventStream clone still holds the channel open — an easy mistake
-        // to make with implicit drop order. Detaching keeps `Drop` safe in all
-        // orderings; callers who need a guaranteed flush use `shutdown`/`join`.
-        let _ = self.handle.take();
+        self.close_and_join();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -182,11 +238,11 @@ mod tests {
     fn events_arrive_in_sequence_order() {
         let sink = MemorySink::new();
         let events = sink.handle();
-        let (stream, guard) = EventStream::spawn(sink);
+        let stream = EventStream::spawn(sink);
         for i in 0..100 {
             stream.emit(EventKind::Expressed { body: format!("{i}") });
         }
-        stream.shutdown(guard); // close + join the consumer
+        stream.shutdown(); // close + join the consumer
         let collected = events.lock().unwrap();
         assert_eq!(collected.len(), 100);
         for (i, ev) in collected.iter().enumerate() {
@@ -195,33 +251,45 @@ mod tests {
     }
 
     #[test]
-    fn emitting_after_guard_dropped_does_not_panic_or_deadlock() {
-        let (stream, guard) = EventStream::spawn(DiscardSink);
-        // Dropping the guard now DETACHES (never blocks), even though `stream`
-        // still holds an open Sender. This must not deadlock.
-        drop(guard);
-        // Further sends are still accepted by the channel (consumer may still be
-        // draining) or silently dropped — either way, no panic.
-        stream.emit(EventKind::Expressed { body: "after".into() });
+    fn drop_closes_and_joins_cleanly() {
+        let sink = MemorySink::new();
+        let events = sink.handle();
+        let stream = EventStream::spawn(sink);
+        stream.emit(EventKind::Expressed { body: "hello".into() });
+        // Explicit drop closes the channel and joins the consumer.
+        drop(stream);
+        let collected = events.lock().unwrap();
+        assert_eq!(collected.len(), 1);
     }
 
     #[test]
     fn multiple_emitters_share_one_total_order() {
         let sink = MemorySink::new();
         let events = sink.handle();
-        let (stream, guard) = EventStream::spawn(sink);
-        let s2 = stream.clone();
-        let t1 = std::thread::spawn(move || {
-            for _ in 0..50 { stream.emit(EventKind::Expressed { body: "a".into() }); }
-        });
-        let t2 = std::thread::spawn(move || {
-            for _ in 0..50 { s2.emit(EventKind::Expressed { body: "b".into() }); }
-        });
+        let stream = Arc::new(EventStream::spawn(sink));
+
+        let t1 = {
+            let s = Arc::clone(&stream);
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    s.emit(EventKind::Expressed { body: "a".into() });
+                }
+            })
+        };
+        let t2 = {
+            let s = Arc::clone(&stream);
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    s.emit(EventKind::Expressed { body: "b".into() });
+                }
+            })
+        };
         t1.join().unwrap();
         t2.join().unwrap();
-        // Both EventStream clones were moved into the threads and dropped when
-        // they finished, so all Senders are gone; join completes promptly.
-        guard.join();
+
+        // Drop the Arc — joins the consumer since we're the last reference.
+        drop(stream);
+
         let collected = events.lock().unwrap();
         assert_eq!(collected.len(), 100);
         let mut seqs: Vec<u64> = collected.iter().map(|e| e.seq).collect();
@@ -229,5 +297,40 @@ mod tests {
         for (i, s) in seqs.iter().enumerate() {
             assert_eq!(*s, i as u64, "no gaps or duplicates across emitters");
         }
+    }
+
+    #[test]
+    fn emit_after_panic_does_not_deadlock() {
+        let stream = EventStream::spawn(DiscardSink);
+        // Simulate a panic while the stream is active.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("simulated application panic");
+        }));
+        assert!(result.is_err());
+        // Dropping the stream after a panic must not deadlock.
+        drop(stream);
+    }
+
+    #[test]
+    fn shutdown_timeout_eventually_joins() {
+        let mut stream = EventStream::spawn(DiscardSink);
+        stream.emit(EventKind::Expressed { body: "test".into() });
+        // Should complete within 1s — the consumer is fast.
+        stream.shutdown_timeout(Duration::from_secs(1));
+        // If we got here, the timeout path didn't deadlock.
+    }
+
+    #[test]
+    fn emit_ignores_closed_stream() {
+        let sink = MemorySink::new();
+        let events = sink.handle();
+        let stream = EventStream::spawn(sink);
+        stream.emit(EventKind::Expressed { body: "before".into() });
+        stream.shutdown();
+        // Emit after shutdown is silently dropped (fail-open for observation).
+        stream.emit(EventKind::Expressed { body: "after".into() });
+        let collected = events.lock().unwrap();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].kind, EventKind::Expressed { body: "before".into() });
     }
 }

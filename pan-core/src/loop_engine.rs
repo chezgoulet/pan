@@ -229,7 +229,7 @@ mod tests {
     fn run_span_executes_invoke_and_concludes() {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("alert.raise")).unwrap();
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         let provider = ScriptedProvider { decision: Decision { intents: vec![
             ActionIntent::Express { body: "working".into() },
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(report.effected, vec!["alert.raise"]);
         assert_eq!(report.expressed, vec!["working"]);
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     /// An observation source that hands out g@0, then reports a superseding g@1
@@ -263,7 +263,7 @@ mod tests {
     fn superseded_decision_is_abandoned_not_executed() {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("danger.fire")).unwrap();
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         // The provider always wants to fire the effect; the abandon-path must
         // prevent it on the superseded revision, then conclude on the new one.
@@ -280,13 +280,13 @@ mod tests {
         assert_eq!(report.effected, vec!["danger.fire"],
             "effect should fire exactly once, on the surviving revision");
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     #[test]
     fn failed_effect_is_recorded_not_fatal() {
         let reg = CapabilityRegistry::new(); // empty → resolve fails
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         let provider = ScriptedProvider { decision: Decision { intents: vec![
             ActionIntent::Invoke { capability: "ghost".into(), args: Value::Null, correlation: None },
@@ -298,6 +298,6 @@ mod tests {
         assert_eq!(report.failed, vec!["ghost"]);
         assert!(report.effected.is_empty());
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 }
