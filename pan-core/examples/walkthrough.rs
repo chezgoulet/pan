@@ -35,7 +35,7 @@ fn registry() -> CapabilityRegistry {
 fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
     println!("\n=== {label} ({}) ===", provider.id());
     let reg = registry();
-    let (stream, guard) = EventStream::spawn(PrintSink { label: label.into() });
+    let mut stream = EventStream::spawn(PrintSink { label: label.into() });
     let pipeline = Pipeline {
         registry: &reg,
         governor: &AllowAll,
@@ -50,7 +50,7 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         trigger,
     }));
     let report = lp.run_span(&mut obs, &Context::default());
-    stream.shutdown(guard);
+    stream.shutdown();
     println!(
         "  -> effected={:?} expressed={:?} end={:?}",
         report.effected, report.expressed, report.end

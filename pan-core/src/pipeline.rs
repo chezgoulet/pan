@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn happy_path_executes_and_records() {
         let reg = registry_with("alert.raise", serde_json::json!({"type":"object"}));
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         let out = p.dispatch(EffectRequest {
             capability: "alert.raise".into(),
@@ -318,13 +318,13 @@ mod tests {
             correlation: None,
         }).unwrap();
         assert_eq!(out.capability, "alert.raise");
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     #[test]
     fn deny_blocks_before_execution() {
         let reg = registry_with("cap.shell", serde_json::json!({"type":"object"}));
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline { registry: &reg, governor: &DenyAll, executor: &EchoExecutor, events: &stream };
         let err = p.dispatch(EffectRequest {
             capability: "cap.shell".into(),
@@ -332,26 +332,26 @@ mod tests {
             correlation: None,
         }).unwrap_err();
         assert!(matches!(err, PipelineError::Rejected(_)));
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     #[test]
     fn unresolved_capability_fails_at_resolve() {
         let reg = CapabilityRegistry::new();
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         let err = p.dispatch(EffectRequest {
             capability: "nope".into(), args: Value::Null, correlation: None,
         }).unwrap_err();
         assert!(matches!(err, PipelineError::Unresolved { .. }));
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     #[test]
     fn invalid_args_fail_at_validate() {
         let reg = registry_with("cap.fs.write",
             serde_json::json!({"type":"object","required":["path"]}));
-        let (stream, guard) = EventStream::spawn(MemorySink::new());
+        let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
         let err = p.dispatch(EffectRequest {
             capability: "cap.fs.write".into(),
@@ -362,7 +362,7 @@ mod tests {
             PipelineError::Invalid { reason, .. } => assert!(reason.contains("path")),
             other => panic!("expected Invalid, got {other:?}"),
         }
-        stream.shutdown(guard);
+        stream.shutdown();
     }
 
     // The structural proof, stated as a test comment: there is no line of code
