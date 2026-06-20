@@ -398,6 +398,26 @@ pub struct PluginHealth {
     pub error: Option<String>,
 }
 
+impl PluginHealth {
+    /// Create an alive (healthy) status for the given plugin id.
+    pub fn alive(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            alive: true,
+            error: None,
+        }
+    }
+
+    /// Create a degraded status for the given plugin id with an error message.
+    pub fn degraded(id: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            alive: false,
+            error: Some(error.into()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------
@@ -598,7 +618,7 @@ version = "0.1.0"
 
         // Create a fake .wasm file with a manifest.
         let wasm_path = dir.join("test-plugin.wasm");
-        fs::write(&wasm_path, b"not a real wasm binary")?;
+        fs::write(&wasm_path, b"not a real wasm binary").unwrap();
         fs::write(
             dir.join("test-plugin.toml"),
             r#"
@@ -627,7 +647,7 @@ version = "0.1.0"
         let dir = std::env::temp_dir().join("pan_test_pset");
         let _ = fs::create_dir_all(&dir);
         let d1 = dir.join("p1.wasm");
-        fs::write(&d1, b"fake")?;
+        fs::write(&d1, b"fake").unwrap();
         fs::write(
             dir.join("p1.toml"),
             r#"
@@ -641,7 +661,7 @@ provides = ["cap.a"]
         .unwrap();
 
         let d2 = dir.join("p2.wasm");
-        fs::write(&d2, b"fake")?;
+        fs::write(&d2, b"fake").unwrap();
         fs::write(
             dir.join("p2.toml"),
             r#"

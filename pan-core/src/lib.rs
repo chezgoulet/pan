@@ -43,7 +43,7 @@ pub mod schema;
 pub mod prelude {
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
-    pub use crate::health::{HealthServer, HealthState, HealthStatus, PluginHealth};
+    pub use crate::health::{HealthServer, HealthState, HealthStatus};
     pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
