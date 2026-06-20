@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, testing]
+  push:
+    branches: [main, testing]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ─── Lint ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ─── Wave 0 — core substrate ──────────────────────────────────────
+  wave-0:
+    name: Wave 0
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pan-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build
+        run: cargo build
+
+      - name: Exit test
+        run: cargo test --test wave_0_exit
+
+      - name: Unit tests
+        run: cargo test
+
+      - name: Build all targets
+        run: cargo build --all-targets
+
+  # ─── Wave 1 — CLI agent with real provider (placeholder) ──────────
+  wave-1:
+    name: Wave 1
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 1 — CLI agent with real provider. Plumbed in a later sprint."
+
+  # ─── Wave 2 — placeholder ─────────────────────────────────────────
+  wave-2:
+    name: Wave 2
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 2 — TBD"
+
+  # ─── Wave 3 — placeholder ─────────────────────────────────────────
+  wave-3:
+    name: Wave 3
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 3 — TBD"
+
+  # ─── Wave 4 — placeholder ─────────────────────────────────────────
+  wave-4:
+    name: Wave 4
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 4 — TBD"
+
+  # ─── Wave 5 — placeholder ─────────────────────────────────────────
+  wave-5:
+    name: Wave 5
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 5 — TBD"
+
+  # ─── Wave 6 — placeholder ─────────────────────────────────────────
+  wave-6:
+    name: Wave 6
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Wave 6 — TBD"
