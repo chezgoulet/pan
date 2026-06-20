@@ -19,6 +19,7 @@
 //!   overrides.
 //! - [`plugind`] — the plugin manager: discovery, Wasm loading (via wasmtime),
 //!   atomic PluginSet, SIGHUP reload, and health probes.
+//! - [`health`] — a `/health` HTTP endpoint on a localhost admin port.
 //!
 //! What is deliberately ABSENT from the core: prompts, tokens, models, chat
 //! messages, tool-call conventions. Those live inside the `provider.llm` plugin.
@@ -33,6 +34,7 @@
 pub mod config;
 pub mod events;
 pub mod handles;
+pub mod health;
 pub mod loop_engine;
 pub mod pipeline;
 pub mod plugind;
@@ -45,6 +47,7 @@ pub mod prelude {
     pub use crate::config::Config;
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
+    pub use crate::health::{HealthServer, HealthState, HealthStatus, PluginHealth};
     pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
