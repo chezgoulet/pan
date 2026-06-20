@@ -83,7 +83,10 @@ pub struct Context {
 impl Context {
     /// Convenience for context plugins assembling a turn.
     pub fn with(mut self, channel: impl Into<String>, body: impl Into<String>) -> Self {
-        self.fragments.push(Fragment { channel: channel.into(), body: body.into() });
+        self.fragments.push(Fragment {
+            channel: channel.into(),
+            body: body.into(),
+        });
         self
     }
 }
@@ -142,7 +145,6 @@ pub enum ActionIntent {
     // "cap.state_write"). Every argument for a separate Mutate was an argument
     // about GOVERNANCE, which is the pipeline's `govern` stage — not the
     // vocabulary's. Unifying gives the pipeline exactly one effect-path to gate.
-
     /// "Emit this content to whoever is listening." NOT inherently chat: it's a
     /// game line of dialogue, a chat reply, or an alert body. The channel family
     /// decides how to render it. A pure-control BT step simply never emits this.
@@ -212,10 +214,20 @@ mod tests {
 
     #[test]
     fn supersession_predicate() {
-        let a = Goal { id: "g".into(), revision: 1, objective: "o".into(),
-            trigger: Trigger::Tick { sequence: 0 } };
-        let b = Goal { revision: 2, ..a.clone() };
-        let c = Goal { id: "other".into(), ..b.clone() };
+        let a = Goal {
+            id: "g".into(),
+            revision: 1,
+            objective: "o".into(),
+            trigger: Trigger::Tick { sequence: 0 },
+        };
+        let b = Goal {
+            revision: 2,
+            ..a.clone()
+        };
+        let c = Goal {
+            id: "other".into(),
+            ..b.clone()
+        };
         assert!(a.superseded_by(&b));
         assert!(!b.superseded_by(&a)); // older revision does not supersede
         assert!(!a.superseded_by(&c)); // different identity never supersedes
@@ -225,18 +237,30 @@ mod tests {
     #[test]
     fn only_invoke_is_a_world_effect() {
         assert!(ActionIntent::Invoke {
-            capability: "x".into(), args: Value::Null, correlation: None
-        }.is_effect());
+            capability: "x".into(),
+            args: Value::Null,
+            correlation: None
+        }
+        .is_effect());
         assert!(!ActionIntent::Express { body: "hi".into() }.is_effect());
-        assert!(!ActionIntent::Conclude { outcome: Outcome::Achieved }.is_effect());
+        assert!(!ActionIntent::Conclude {
+            outcome: Outcome::Achieved
+        }
+        .is_effect());
     }
 
     #[test]
     fn decision_reports_last_outcome() {
-        let d = Decision { intents: vec![
-            ActionIntent::Conclude { outcome: Outcome::Continue },
-            ActionIntent::Conclude { outcome: Outcome::Achieved },
-        ]};
+        let d = Decision {
+            intents: vec![
+                ActionIntent::Conclude {
+                    outcome: Outcome::Continue,
+                },
+                ActionIntent::Conclude {
+                    outcome: Outcome::Achieved,
+                },
+            ],
+        };
         assert_eq!(d.outcome(), Some(Outcome::Achieved));
         assert_eq!(Decision::default().outcome(), None);
     }
@@ -249,7 +273,10 @@ mod tests {
             correlation: None,
         };
         let s = serde_json::to_string(&i).unwrap();
-        assert!(!s.contains("correlation"), "None correlation must not serialize: {s}");
+        assert!(
+            !s.contains("correlation"),
+            "None correlation must not serialize: {s}"
+        );
         let back: ActionIntent = serde_json::from_str(&s).unwrap();
         assert_eq!(i, back);
     }

@@ -55,10 +55,7 @@ impl HealthState {
 
     /// Take a snapshot of the current state for serving via HTTP.
     pub fn snapshot(&self) -> HealthStatus {
-        let uptime = self
-            .started
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
+        let uptime = self.started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         HealthStatus {
             uptime_secs: uptime,
             loop_running: self.loop_running,
@@ -145,9 +142,8 @@ fn handle_connection(
     let request = String::from_utf8_lossy(&buf[..n]);
     let (status_line, content_type, body) = if request.starts_with("GET /health ") {
         let health = state.lock().unwrap().snapshot();
-        let json = serde_json::to_string_pretty(&health).unwrap_or_else(|_| {
-            r#"{"error":"serialization failed"}"#.to_string()
-        });
+        let json = serde_json::to_string_pretty(&health)
+            .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string());
         ("HTTP/1.1 200 OK\r\n", "application/json", json)
     } else {
         (
@@ -210,8 +206,14 @@ mod tests {
         stream.read_to_string(&mut buf).unwrap();
 
         assert!(buf.contains("200 OK"), "expected 200, got: {buf}");
-        assert!(buf.contains("uptime_secs"), "expected JSON with uptime_secs");
-        assert!(buf.contains("plugin.test"), "expected plugin health in response");
+        assert!(
+            buf.contains("uptime_secs"),
+            "expected JSON with uptime_secs"
+        );
+        assert!(
+            buf.contains("plugin.test"),
+            "expected plugin health in response"
+        );
 
         drop(stream);
         // Server thread will error on next accept due to socket close.

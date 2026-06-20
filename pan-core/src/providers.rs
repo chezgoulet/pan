@@ -33,14 +33,18 @@ pub mod llm {
             for f in &ctx.fragments {
                 p.push_str(&format!("[{}] {}\n", f.channel, f.body));
             }
-            p.push_str(&format!("You may call: {:?}\n",
-                caps.iter().map(|c| &c.id).collect::<Vec<_>>()));
+            p.push_str(&format!(
+                "You may call: {:?}\n",
+                caps.iter().map(|c| &c.id).collect::<Vec<_>>()
+            ));
             p
         }
     }
 
     impl Provider for LlmProvider {
-        fn id(&self) -> &str { "provider.llm" }
+        fn id(&self) -> &str {
+            "provider.llm"
+        }
 
         fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
             let _prompt = self.build_prompt(goal, ctx, caps);
@@ -48,14 +52,18 @@ pub mod llm {
             // Stubbed deterministic behavior: greet + remember + conclude.
             Decision {
                 intents: vec![
-                    ActionIntent::Express { body: "Hello, I can help with that.".into() },
+                    ActionIntent::Express {
+                        body: "Hello, I can help with that.".into(),
+                    },
                     // State-write is an Invoke of a capability, not a Mutate.
                     ActionIntent::Invoke {
                         capability: "cap.state_write".into(),
                         args: serde_json::json!({"path": "last_seen", "value": "now"}),
                         correlation: None,
                     },
-                    ActionIntent::Conclude { outcome: Outcome::Achieved },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
                 ],
             }
         }
@@ -81,7 +89,9 @@ pub mod behaviortree {
     }
 
     impl Provider for BehaviorTreeProvider {
-        fn id(&self) -> &str { "provider.behaviortree" }
+        fn id(&self) -> &str {
+            "provider.behaviortree"
+        }
 
         fn decide(&self, _goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
             // Pure control flow. No prompt, no tokens, no chat. Emits the exact
@@ -94,7 +104,9 @@ pub mod behaviortree {
                         args: args.clone(),
                         correlation: None, // <-- not fabricated. BT has no need.
                     }),
-                    Node::Succeed => intents.push(ActionIntent::Conclude { outcome: Outcome::Achieved }),
+                    Node::Succeed => intents.push(ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    }),
                 }
             }
             Decision { intents }
@@ -119,7 +131,9 @@ pub mod rules {
     }
 
     impl Provider for RulesProvider {
-        fn id(&self) -> &str { "provider.rules" }
+        fn id(&self) -> &str {
+            "provider.rules"
+        }
 
         fn decide(&self, goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
             if let Trigger::Signal { name, value } = &goal.trigger {
@@ -132,14 +146,20 @@ pub mod rules {
                                     args: r.then_invoke.1.clone(),
                                     correlation: None,
                                 },
-                                ActionIntent::Conclude { outcome: Outcome::Achieved },
+                                ActionIntent::Conclude {
+                                    outcome: Outcome::Achieved,
+                                },
                             ],
                         };
                     }
                 }
             }
             // No rule fired: explicitly say "still going / nothing to do".
-            Decision { intents: vec![ActionIntent::Conclude { outcome: Outcome::Continue }] }
+            Decision {
+                intents: vec![ActionIntent::Conclude {
+                    outcome: Outcome::Continue,
+                }],
+            }
         }
     }
 }
@@ -159,26 +179,49 @@ mod tests {
 
     #[test]
     fn llm_emits_contract_types_only() {
-        let p = llm::LlmProvider { model: "any".into() };
-        let g = Goal { id: "g1".into(), revision: 0, objective: "greet".into(),
-            trigger: Trigger::Utterance { from: "u".into(), content: "hi".into() } };
+        let p = llm::LlmProvider {
+            model: "any".into(),
+        };
+        let g = Goal {
+            id: "g1".into(),
+            revision: 0,
+            objective: "greet".into(),
+            trigger: Trigger::Utterance {
+                from: "u".into(),
+                content: "hi".into(),
+            },
+        };
         let d = p.decide(&g, &Context::default(), &caps());
-        assert!(d.intents.iter().any(|i| matches!(i, ActionIntent::Conclude { .. })));
+        assert!(d
+            .intents
+            .iter()
+            .any(|i| matches!(i, ActionIntent::Conclude { .. })));
     }
 
     #[test]
     fn behavior_tree_emits_identical_invoke_shape() {
         let p = behaviortree::BehaviorTreeProvider {
             root: vec![
-                behaviortree::Node::Action { capability: "npc.move".into(), args: serde_json::json!({"to":"door"}) },
+                behaviortree::Node::Action {
+                    capability: "npc.move".into(),
+                    args: serde_json::json!({"to":"door"}),
+                },
                 behaviortree::Node::Succeed,
             ],
         };
-        let g = Goal { id: "g2".into(), revision: 0, objective: "patrol".into(),
-            trigger: Trigger::Tick { sequence: 5 } };
+        let g = Goal {
+            id: "g2".into(),
+            revision: 0,
+            objective: "patrol".into(),
+            trigger: Trigger::Tick { sequence: 5 },
+        };
         let d = p.decide(&g, &Context::default(), &[]);
         match &d.intents[0] {
-            ActionIntent::Invoke { capability, correlation, .. } => {
+            ActionIntent::Invoke {
+                capability,
+                correlation,
+                ..
+            } => {
                 assert_eq!(capability, "npc.move");
                 assert!(correlation.is_none()); // never fabricated
             }
@@ -194,13 +237,23 @@ mod tests {
                 then_invoke: ("alert.raise".into(), serde_json::json!({"level":"high"})),
             }],
         };
-        let g = Goal { id: "g3".into(), revision: 0, objective: "watch temp".into(),
-            trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } };
+        let g = Goal {
+            id: "g3".into(),
+            revision: 0,
+            objective: "watch temp".into(),
+            trigger: Trigger::Signal {
+                name: "temp".into(),
+                value: 91.0,
+            },
+        };
         let d = p.decide(&g, &Context::default(), &caps());
-        assert_eq!(d.intents[0], ActionIntent::Invoke {
-            capability: "alert.raise".into(),
-            args: serde_json::json!({"level":"high"}),
-            correlation: None,
-        });
+        assert_eq!(
+            d.intents[0],
+            ActionIntent::Invoke {
+                capability: "alert.raise".into(),
+                args: serde_json::json!({"level":"high"}),
+                correlation: None,
+            }
+        );
     }
 }

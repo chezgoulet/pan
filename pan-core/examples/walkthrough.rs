@@ -35,14 +35,20 @@ fn registry() -> CapabilityRegistry {
 fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
     println!("\n=== {label} ({}) ===", provider.id());
     let reg = registry();
-    let mut stream = EventStream::spawn(PrintSink { label: label.into() });
+    let mut stream = EventStream::spawn(PrintSink {
+        label: label.into(),
+    });
     let pipeline = Pipeline {
         registry: &reg,
         governor: &AllowAll,
         executor: &EchoExecutor,
         events: &stream,
     };
-    let lp = Loop { provider, pipeline: &pipeline, events: &stream };
+    let lp = Loop {
+        provider,
+        pipeline: &pipeline,
+        events: &stream,
+    };
     let mut obs = Once(Some(Goal {
         id: "demo".into(),
         revision: 0,
@@ -58,13 +64,20 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
 }
 
 fn main() {
-    println!("Pan Wave 0 — three providers, one core.\n\
-              Each runs through the SAME loop and the SAME non-bypassable pipeline.");
+    println!(
+        "Pan Wave 0 — three providers, one core.\n\
+              Each runs through the SAME loop and the SAME non-bypassable pipeline."
+    );
 
     drive(
         "LLM",
-        &llm::LlmProvider { model: "demo".into() },
-        Trigger::Utterance { from: "user".into(), content: "hello".into() },
+        &llm::LlmProvider {
+            model: "demo".into(),
+        },
+        Trigger::Utterance {
+            from: "user".into(),
+            content: "hello".into(),
+        },
     );
 
     drive(
@@ -89,7 +102,10 @@ fn main() {
                 then_invoke: ("alert.raise".into(), serde_json::json!({ "level": "high" })),
             }],
         },
-        Trigger::Signal { name: "temp".into(), value: 91.0 },
+        Trigger::Signal {
+            name: "temp".into(),
+            value: 91.0,
+        },
     );
 
     println!("\nThe core could not tell which provider produced each Decision.");

@@ -26,7 +26,9 @@ pub struct CapabilityRegistry {
 
 impl CapabilityRegistry {
     pub fn new() -> Self {
-        Self { by_id: BTreeMap::new() }
+        Self {
+            by_id: BTreeMap::new(),
+        }
     }
 
     /// Register a capability. Returns an error if its id is already taken —
@@ -50,8 +52,12 @@ impl CapabilityRegistry {
         self.by_id.values().cloned().collect()
     }
 
-    pub fn len(&self) -> usize { self.by_id.len() }
-    pub fn is_empty(&self) -> bool { self.by_id.is_empty() }
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
 }
 
 /// A name collision: two things claimed the same hierarchical id.
@@ -61,7 +67,11 @@ pub struct ConflictError {
 }
 impl std::fmt::Display for ConflictError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "id `{}` is already registered (conflicts are errors, not last-wins)", self.id)
+        write!(
+            f,
+            "id `{}` is already registered (conflicts are errors, not last-wins)",
+            self.id
+        )
     }
 }
 impl std::error::Error for ConflictError {}
@@ -83,13 +93,19 @@ pub trait Plugin: Send {
     fn id(&self) -> &str;
 
     /// Acquire dependencies / config. Errors here abort startup.
-    fn provision(&mut self) -> Result<(), PluginError> { Ok(()) }
+    fn provision(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
 
     /// Self-validate after provisioning; last chance to refuse before running.
-    fn validate(&self) -> Result<(), PluginError> { Ok(()) }
+    fn validate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
 
     /// Enter active state. The loop runs between `run` and `cleanup`.
-    fn run(&mut self) -> Result<(), PluginError> { Ok(()) }
+    fn run(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
 
     /// Release resources. Always attempted, even if an earlier phase failed.
     fn cleanup(&mut self) {}
@@ -116,7 +132,9 @@ pub struct Lifecycle {
 
 impl Lifecycle {
     pub fn new() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
     /// Register a plugin (phase 1). Insertion order is preserved; conflicts are
@@ -133,7 +151,9 @@ impl Lifecycle {
         let mut seen = std::collections::BTreeSet::new();
         for p in &self.plugins {
             if !seen.insert(p.id().to_string()) {
-                return Err(LifecycleError::Conflict(ConflictError { id: p.id().to_string() }));
+                return Err(LifecycleError::Conflict(ConflictError {
+                    id: p.id().to_string(),
+                }));
             }
         }
         for p in &mut self.plugins {
@@ -169,15 +189,23 @@ impl Lifecycle {
     /// The full startup sequence, returning to the caller in the "running" state.
     /// On any error, plugins provisioned so far are cleaned up before returning.
     pub fn start(&mut self) -> Result<(), LifecycleError> {
-        if let Err(e) = self.provision().and_then(|_| self.validate()).and_then(|_| self.run()) {
+        if let Err(e) = self
+            .provision()
+            .and_then(|_| self.validate())
+            .and_then(|_| self.run())
+        {
             self.cleanup();
             return Err(e);
         }
         Ok(())
     }
 
-    pub fn len(&self) -> usize { self.plugins.len() }
-    pub fn is_empty(&self) -> bool { self.plugins.is_empty() }
+    pub fn len(&self) -> usize {
+        self.plugins.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty()
+    }
 }
 
 #[derive(Debug)]
@@ -203,7 +231,11 @@ mod tests {
     use std::sync::Arc;
 
     fn cap(id: &str) -> Capability {
-        Capability { id: id.into(), summary: "".into(), args_schema: serde_json::json!({}) }
+        Capability {
+            id: id.into(),
+            summary: "".into(),
+            args_schema: serde_json::json!({}),
+        }
     }
 
     #[test]
@@ -235,15 +267,20 @@ mod tests {
     const RUN: u8 = 4;
     const CLEANUP: u8 = 8;
     impl Plugin for Recorder {
-        fn id(&self) -> &str { &self.id }
+        fn id(&self) -> &str {
+            &self.id
+        }
         fn provision(&mut self) -> Result<(), PluginError> {
-            self.phases.fetch_or(PROVISION, Ordering::SeqCst); Ok(())
+            self.phases.fetch_or(PROVISION, Ordering::SeqCst);
+            Ok(())
         }
         fn validate(&self) -> Result<(), PluginError> {
-            self.phases.fetch_or(VALIDATE, Ordering::SeqCst); Ok(())
+            self.phases.fetch_or(VALIDATE, Ordering::SeqCst);
+            Ok(())
         }
         fn run(&mut self) -> Result<(), PluginError> {
-            self.phases.fetch_or(RUN, Ordering::SeqCst); Ok(())
+            self.phases.fetch_or(RUN, Ordering::SeqCst);
+            Ok(())
         }
         fn cleanup(&mut self) {
             self.phases.fetch_or(CLEANUP, Ordering::SeqCst);
@@ -254,18 +291,30 @@ mod tests {
     fn lifecycle_runs_all_phases_in_order() {
         let phases = Arc::new(AtomicU8::new(0));
         let mut lc = Lifecycle::new();
-        lc.register(Box::new(Recorder { id: "p.one".into(), phases: Arc::clone(&phases) }));
+        lc.register(Box::new(Recorder {
+            id: "p.one".into(),
+            phases: Arc::clone(&phases),
+        }));
         lc.start().unwrap();
         lc.cleanup();
-        assert_eq!(phases.load(Ordering::SeqCst), PROVISION | VALIDATE | RUN | CLEANUP);
+        assert_eq!(
+            phases.load(Ordering::SeqCst),
+            PROVISION | VALIDATE | RUN | CLEANUP
+        );
     }
 
     #[test]
     fn lifecycle_rejects_duplicate_plugin_ids_at_provision() {
         let phases = Arc::new(AtomicU8::new(0));
         let mut lc = Lifecycle::new();
-        lc.register(Box::new(Recorder { id: "dup".into(), phases: Arc::clone(&phases) }));
-        lc.register(Box::new(Recorder { id: "dup".into(), phases: Arc::clone(&phases) }));
+        lc.register(Box::new(Recorder {
+            id: "dup".into(),
+            phases: Arc::clone(&phases),
+        }));
+        lc.register(Box::new(Recorder {
+            id: "dup".into(),
+            phases: Arc::clone(&phases),
+        }));
         let err = lc.provision().unwrap_err();
         assert!(matches!(err, LifecycleError::Conflict(_)));
         // No plugin should have been provisioned: the conflict is detected first.

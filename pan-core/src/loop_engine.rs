@@ -140,7 +140,9 @@ impl<'a> Loop<'a> {
                     // Continue (explicit or implicit): step again if the stream
                     // has more, else exhausted.
                     match obs.next_goal() {
-                        Some(g) => { current = g; }
+                        Some(g) => {
+                            current = g;
+                        }
                         None => {
                             report.end = Some(RunEnd::StreamExhausted);
                             return report;
@@ -157,7 +159,11 @@ impl<'a> Loop<'a> {
         let mut outcome = None;
         for intent in &decision.intents {
             match intent {
-                ActionIntent::Invoke { capability, args, correlation } => {
+                ActionIntent::Invoke {
+                    capability,
+                    args,
+                    correlation,
+                } => {
                     let req = crate::pipeline::EffectRequest {
                         capability: capability.clone(),
                         args: args.clone(),
@@ -172,7 +178,8 @@ impl<'a> Loop<'a> {
                     }
                 }
                 ActionIntent::Express { body } => {
-                    self.events.emit(EventKind::Expressed { body: body.clone() });
+                    self.events
+                        .emit(EventKind::Expressed { body: body.clone() });
                     report.expressed.push(body.clone());
                 }
                 ActionIntent::Conclude { outcome: o } => {
@@ -206,11 +213,19 @@ mod tests {
     use crate::schema::{Capability, Trigger, Value};
 
     fn cap(id: &str) -> Capability {
-        Capability { id: id.into(), summary: "".into(), args_schema: serde_json::json!({"type":"object"}) }
+        Capability {
+            id: id.into(),
+            summary: "".into(),
+            args_schema: serde_json::json!({"type":"object"}),
+        }
     }
     fn goal(id: &str, rev: u64) -> Goal {
-        Goal { id: id.into(), revision: rev, objective: "o".into(),
-            trigger: Trigger::Tick { sequence: 0 } }
+        Goal {
+            id: id.into(),
+            revision: rev,
+            objective: "o".into(),
+            trigger: Trigger::Tick { sequence: 0 },
+        }
     }
 
     /// A provider that emits a fixed decision, optionally returning different
@@ -219,7 +234,9 @@ mod tests {
         decision: Decision,
     }
     impl Provider for ScriptedProvider {
-        fn id(&self) -> &str { "provider.scripted" }
+        fn id(&self) -> &str {
+            "provider.scripted"
+        }
         fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
             self.decision.clone()
         }
@@ -230,14 +247,34 @@ mod tests {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("alert.raise")).unwrap();
         let mut stream = EventStream::spawn(MemorySink::new());
-        let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
-        let provider = ScriptedProvider { decision: Decision { intents: vec![
-            ActionIntent::Express { body: "working".into() },
-            ActionIntent::Invoke { capability: "alert.raise".into(),
-                args: serde_json::json!({"level":"high"}), correlation: None },
-            ActionIntent::Conclude { outcome: Outcome::Achieved },
-        ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
+        let pipe = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let provider = ScriptedProvider {
+            decision: Decision {
+                intents: vec![
+                    ActionIntent::Express {
+                        body: "working".into(),
+                    },
+                    ActionIntent::Invoke {
+                        capability: "alert.raise".into(),
+                        args: serde_json::json!({"level":"high"}),
+                        correlation: None,
+                    },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
+                ],
+            },
+        };
+        let lp = Loop {
+            provider: &provider,
+            pipeline: &pipe,
+            events: &stream,
+        };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
         assert_eq!(report.effected, vec!["alert.raise"]);
@@ -253,7 +290,9 @@ mod tests {
         newer: Option<Goal>,
     }
     impl Observations for Superseding {
-        fn next_goal(&mut self) -> Option<Goal> { self.first.take() }
+        fn next_goal(&mut self) -> Option<Goal> {
+            self.first.take()
+        }
         fn superseding(&mut self, current: &Goal) -> Option<Goal> {
             self.newer.take().filter(|n| current.superseded_by(n))
         }
@@ -264,21 +303,45 @@ mod tests {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("danger.fire")).unwrap();
         let mut stream = EventStream::spawn(MemorySink::new());
-        let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
+        let pipe = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
         // The provider always wants to fire the effect; the abandon-path must
         // prevent it on the superseded revision, then conclude on the new one.
-        let provider = ScriptedProvider { decision: Decision { intents: vec![
-            ActionIntent::Invoke { capability: "danger.fire".into(),
-                args: serde_json::json!({}), correlation: None },
-            ActionIntent::Conclude { outcome: Outcome::Achieved },
-        ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
-        let mut obs = Superseding { first: Some(goal("g", 0)), newer: Some(goal("g", 1)) };
+        let provider = ScriptedProvider {
+            decision: Decision {
+                intents: vec![
+                    ActionIntent::Invoke {
+                        capability: "danger.fire".into(),
+                        args: serde_json::json!({}),
+                        correlation: None,
+                    },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
+                ],
+            },
+        };
+        let lp = Loop {
+            provider: &provider,
+            pipeline: &pipe,
+            events: &stream,
+        };
+        let mut obs = Superseding {
+            first: Some(goal("g", 0)),
+            newer: Some(goal("g", 1)),
+        };
         let report = lp.run_span(&mut obs, &Context::default());
         // First revision's decision was discarded; only the re-decide on rev 1
         // actually executed the effect once.
-        assert_eq!(report.effected, vec!["danger.fire"],
-            "effect should fire exactly once, on the surviving revision");
+        assert_eq!(
+            report.effected,
+            vec!["danger.fire"],
+            "effect should fire exactly once, on the surviving revision"
+        );
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
         stream.shutdown();
     }
@@ -287,12 +350,31 @@ mod tests {
     fn failed_effect_is_recorded_not_fatal() {
         let reg = CapabilityRegistry::new(); // empty → resolve fails
         let mut stream = EventStream::spawn(MemorySink::new());
-        let pipe = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
-        let provider = ScriptedProvider { decision: Decision { intents: vec![
-            ActionIntent::Invoke { capability: "ghost".into(), args: Value::Null, correlation: None },
-            ActionIntent::Conclude { outcome: Outcome::Achieved },
-        ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
+        let pipe = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let provider = ScriptedProvider {
+            decision: Decision {
+                intents: vec![
+                    ActionIntent::Invoke {
+                        capability: "ghost".into(),
+                        args: Value::Null,
+                        correlation: None,
+                    },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
+                ],
+            },
+        };
+        let lp = Loop {
+            provider: &provider,
+            pipeline: &pipe,
+            events: &stream,
+        };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
         assert_eq!(report.failed, vec!["ghost"]);

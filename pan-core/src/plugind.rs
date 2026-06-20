@@ -118,7 +118,11 @@ impl WasmPlugin {
         // TODO(#62): instantiate wasmtime module and link the C-ABI exports.
         // For now, stub the instance — this compiles and the real ABI will
         // be wired when the SDK lands.
-        Ok(WasmPlugin { id, manifest, wasm_path })
+        Ok(WasmPlugin {
+            id,
+            manifest,
+            wasm_path,
+        })
     }
 
     /// Panic if `provision` / `validate` / `run` / `cleanup` are called without
@@ -173,7 +177,9 @@ pub struct NativePlugin {
 
 impl std::fmt::Debug for NativePlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativePlugin").field("id", &self.id).finish()
+        f.debug_struct("NativePlugin")
+            .field("id", &self.id)
+            .finish()
     }
 }
 
@@ -182,7 +188,10 @@ impl Plugin for NativePlugin {
         &self.id
     }
     fn provision(&mut self) -> Result<(), PluginError> {
-        (self.provision_fn.take().unwrap_or_else(|| Box::new(|| Ok(()))))()
+        (self
+            .provision_fn
+            .take()
+            .unwrap_or_else(|| Box::new(|| Ok(()))))()
     }
     fn validate(&self) -> Result<(), PluginError> {
         (self.validate_fn)()
@@ -225,17 +234,26 @@ mod plugin_set {
             for (i, p) in plugins.iter().enumerate() {
                 by_id.insert(p.id().to_string(), i);
             }
-            PluginSet { plugins, by_id, capability_index }
+            PluginSet {
+                plugins,
+                by_id,
+                capability_index,
+            }
         }
 
         /// Look up a plugin by its id.
         pub fn lookup(&self, id: &str) -> Option<&(dyn Plugin + Send + Sync)> {
-            self.by_id.get(id).and_then(|&i| self.plugins.get(i)).map(|p| p.as_ref())
+            self.by_id
+                .get(id)
+                .and_then(|&i| self.plugins.get(i))
+                .map(|p| p.as_ref())
         }
 
         /// Find which plugin provides a given capability.
         pub fn provider_for(&self, capability: &str) -> Option<&(dyn Plugin + Send + Sync)> {
-            self.capability_index.get(capability).and_then(|id| self.lookup(id))
+            self.capability_index
+                .get(capability)
+                .and_then(|id| self.lookup(id))
         }
 
         /// Iterate all plugins.
@@ -284,7 +302,10 @@ impl PluginManager {
             .into_iter()
             .map(|p| -> Arc<dyn Plugin + Send + Sync> { p })
             .collect();
-        let set = Arc::new(PluginSet::new(plugin_arcs.clone(), capability_index.clone()));
+        let set = Arc::new(PluginSet::new(
+            plugin_arcs.clone(),
+            capability_index.clone(),
+        ));
 
         let mut lifecycle = Lifecycle::new();
         // TODO(#62): instantiate wasmtime instances and register them here.
@@ -450,30 +471,15 @@ fn discover_all(
 #[derive(Debug)]
 pub enum PlugindError {
     /// I/O error during manifest loading.
-    ManifestIo {
-        path: PathBuf,
-        detail: String,
-    },
+    ManifestIo { path: PathBuf, detail: String },
     /// TOML parse error in a manifest.
-    ManifestParse {
-        path: PathBuf,
-        detail: String,
-    },
+    ManifestParse { path: PathBuf, detail: String },
     /// Manifest validation failed (e.g. missing name).
-    ManifestValidation {
-        path: PathBuf,
-        message: String,
-    },
+    ManifestValidation { path: PathBuf, message: String },
     /// I/O error during directory discovery.
-    DiscoveryIo {
-        path: PathBuf,
-        detail: String,
-    },
+    DiscoveryIo { path: PathBuf, detail: String },
     /// Wasmtime instantiation error.
-    WasmLoad {
-        path: PathBuf,
-        detail: String,
-    },
+    WasmLoad { path: PathBuf, detail: String },
     /// Lifecycle error during start or reload.
     Lifecycle(crate::registry::LifecycleError),
     /// A reload was already in progress.
@@ -484,19 +490,44 @@ impl std::fmt::Display for PlugindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PlugindError::ManifestIo { path, detail } => {
-                write!(f, "I/O error reading plugin manifest `{}`: {}", path.display(), detail)
+                write!(
+                    f,
+                    "I/O error reading plugin manifest `{}`: {}",
+                    path.display(),
+                    detail
+                )
             }
             PlugindError::ManifestParse { path, detail } => {
-                write!(f, "TOML parse error in plugin manifest `{}`: {}", path.display(), detail)
+                write!(
+                    f,
+                    "TOML parse error in plugin manifest `{}`: {}",
+                    path.display(),
+                    detail
+                )
             }
             PlugindError::ManifestValidation { path, message } => {
-                write!(f, "plugin manifest validation error in `{}`: {}", path.display(), message)
+                write!(
+                    f,
+                    "plugin manifest validation error in `{}`: {}",
+                    path.display(),
+                    message
+                )
             }
             PlugindError::DiscoveryIo { path, detail } => {
-                write!(f, "I/O error scanning plugin directory `{}`: {}", path.display(), detail)
+                write!(
+                    f,
+                    "I/O error scanning plugin directory `{}`: {}",
+                    path.display(),
+                    detail
+                )
             }
             PlugindError::WasmLoad { path, detail } => {
-                write!(f, "wasmtime instantiation error for `{}`: {}", path.display(), detail)
+                write!(
+                    f,
+                    "wasmtime instantiation error for `{}`: {}",
+                    path.display(),
+                    detail
+                )
             }
             PlugindError::Lifecycle(e) => write!(f, "lifecycle error: {e}"),
             PlugindError::ReloadInProgress => write!(f, "a SIGHUP reload is already in progress"),
@@ -520,7 +551,9 @@ mod tests {
         let dir = std::env::temp_dir().join("pan_test_manifest_valid");
         let _ = fs::create_dir_all(&dir);
         let mpath = dir.join("plugin.toml");
-        fs::write(&mpath, r#"
+        fs::write(
+            &mpath,
+            r#"
 [plugin]
 name = "test-plugin"
 version = "0.1.0"
@@ -528,7 +561,9 @@ version = "0.1.0"
 [capabilities]
 provides = ["cap.a", "cap.b"]
 needs = ["cap.c"]
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let m = PluginManifest::load(&mpath).unwrap();
         assert_eq!(m.meta.name, "test-plugin");
@@ -542,11 +577,15 @@ needs = ["cap.c"]
         let dir = std::env::temp_dir().join("pan_test_manifest_empty");
         let _ = fs::create_dir_all(&dir);
         let mpath = dir.join("bad.toml");
-        fs::write(&mpath, r#"
+        fs::write(
+            &mpath,
+            r#"
 [plugin]
 name = ""
 version = "0.1.0"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let err = PluginManifest::load(&mpath).unwrap_err();
         assert!(matches!(err, PlugindError::ManifestValidation { .. }));
@@ -560,12 +599,16 @@ version = "0.1.0"
         // Create a fake .wasm file with a manifest.
         let wasm_path = dir.join("test-plugin.wasm");
         fs::write(&wasm_path, b"not a real wasm binary")?;
-        fs::write(dir.join("test-plugin.toml"), r#"
+        fs::write(
+            dir.join("test-plugin.toml"),
+            r#"
 [plugin]
 name = "test-plugin"
 version = "0.1.0"
 [capabilities]
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let (plugins, _) = discover_all(&[dir.clone()]).unwrap();
         assert_eq!(plugins.len(), 1, "should discover the fake wasm file");
@@ -585,28 +628,33 @@ version = "0.1.0"
         let _ = fs::create_dir_all(&dir);
         let d1 = dir.join("p1.wasm");
         fs::write(&d1, b"fake")?;
-        fs::write(dir.join("p1.toml"), r#"
+        fs::write(
+            dir.join("p1.toml"),
+            r#"
 [plugin]
 name = "p1"
 version = "1.0"
 [capabilities]
 provides = ["cap.a"]
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let d2 = dir.join("p2.wasm");
         fs::write(&d2, b"fake")?;
-        fs::write(dir.join("p2.toml"), r#"
+        fs::write(
+            dir.join("p2.toml"),
+            r#"
 [plugin]
 name = "p2"
 version = "1.0"
 [capabilities]
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let (plugins, cap_index) = discover_all(&[dir]).unwrap();
-        let set = PluginSet::new(
-            plugins.into_iter().map(|p| p).collect(),
-            cap_index,
-        );
+        let set = PluginSet::new(plugins.into_iter().map(|p| p).collect(), cap_index);
 
         assert_eq!(set.len(), 2);
         assert!(set.lookup("p1").is_some());

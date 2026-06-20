@@ -62,8 +62,12 @@ pub trait Governor: Send + Sync {
 /// Wave 0 so the stage runs end to end). Replaced by real policy in Wave 4.
 pub struct AllowAll;
 impl Governor for AllowAll {
-    fn id(&self) -> &str { "gov.allow" }
-    fn govern(&self, _capability: &str, _args: &Value) -> Verdict { Verdict::Allow }
+    fn id(&self) -> &str {
+        "gov.allow"
+    }
+    fn govern(&self, _capability: &str, _args: &Value) -> Verdict {
+        Verdict::Allow
+    }
 }
 
 /// The `execute` stage plugin slot. Receives a [`Governed`] effect — which by
@@ -82,7 +86,9 @@ pub struct ExecError(pub String);
 /// `exec.docker`) arrive in Waves 1/4.
 pub struct EchoExecutor;
 impl Executor for EchoExecutor {
-    fn id(&self) -> &str { "exec.echo" }
+    fn id(&self) -> &str {
+        "exec.echo"
+    }
     fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError> {
         Ok(serde_json::json!({ "executed": capability, "args": args }))
     }
@@ -154,10 +160,15 @@ impl<'a> Pipeline<'a> {
     /// the loop records `DispatchStarted` before calling in.
     pub fn resolve(&self, request: EffectRequest) -> Result<Resolved, PipelineError> {
         match self.registry.lookup(&request.capability) {
-            Some(cap) => Ok(Resolved { args_schema: cap.args_schema.clone(), request }),
+            Some(cap) => Ok(Resolved {
+                args_schema: cap.args_schema.clone(),
+                request,
+            }),
             None => {
                 self.record("resolve", &request.capability, StageStatus::Error);
-                Err(PipelineError::Unresolved { capability: request.capability })
+                Err(PipelineError::Unresolved {
+                    capability: request.capability,
+                })
             }
         }
     }
@@ -169,10 +180,15 @@ impl<'a> Pipeline<'a> {
         let cap = &resolved.request.capability;
         if let Err(reason) = minimal_schema_check(&resolved.args_schema, &resolved.request.args) {
             self.record("validate", cap, StageStatus::Error);
-            return Err(PipelineError::Invalid { capability: cap.clone(), reason });
+            return Err(PipelineError::Invalid {
+                capability: cap.clone(),
+                reason,
+            });
         }
         self.record("validate", cap, StageStatus::Ok);
-        Ok(Validated { request: resolved.request })
+        Ok(Validated {
+            request: resolved.request,
+        })
     }
 
     /// Stage 3 — govern: the allow/deny decision. Returns a [`Governed`] token
@@ -185,7 +201,9 @@ impl<'a> Pipeline<'a> {
         match verdict {
             Verdict::Allow => {
                 self.record("govern", cap, StageStatus::Ok);
-                Ok(Governed { request: validated.request })
+                Ok(Governed {
+                    request: validated.request,
+                })
             }
             other => {
                 self.record("govern", cap, StageStatus::Denied);
@@ -209,11 +227,17 @@ impl<'a> Pipeline<'a> {
                     capability: cap.clone(),
                     result: result.clone(),
                 });
-                Ok(Effected { capability: cap, result })
+                Ok(Effected {
+                    capability: cap,
+                    result,
+                })
             }
             Err(ExecError(reason)) => {
                 self.record("execute", &cap, StageStatus::Error);
-                Err(PipelineError::Execution { capability: cap, reason })
+                Err(PipelineError::Execution {
+                    capability: cap,
+                    reason,
+                })
             }
         }
     }
@@ -246,7 +270,9 @@ impl<'a> Pipeline<'a> {
 /// objects. Deliberately minimal — a real JSON-Schema validator is a Wave-6
 /// swap. Returns `Ok(())` if the schema declares nothing checkable.
 fn minimal_schema_check(schema: &Value, args: &Value) -> Result<(), String> {
-    let Some(obj) = schema.as_object() else { return Ok(()) };
+    let Some(obj) = schema.as_object() else {
+        return Ok(());
+    };
     if let Some(ty) = obj.get("type").and_then(|t| t.as_str()) {
         let matches = match ty {
             "object" => args.is_object(),
@@ -259,7 +285,10 @@ fn minimal_schema_check(schema: &Value, args: &Value) -> Result<(), String> {
             _ => true,
         };
         if !matches {
-            return Err(format!("expected JSON type `{ty}`, got `{}`", json_type_name(args)));
+            return Err(format!(
+                "expected JSON type `{ty}`, got `{}`",
+                json_type_name(args)
+            ));
         }
     }
     if let Some(required) = obj.get("required").and_then(|r| r.as_array()) {
@@ -294,16 +323,24 @@ mod tests {
 
     fn registry_with(cap_id: &str, schema: Value) -> CapabilityRegistry {
         let mut r = CapabilityRegistry::new();
-        r.register(Capability { id: cap_id.into(), summary: "".into(), args_schema: schema })
-            .unwrap();
+        r.register(Capability {
+            id: cap_id.into(),
+            summary: "".into(),
+            args_schema: schema,
+        })
+        .unwrap();
         r
     }
 
     struct DenyAll;
     impl Governor for DenyAll {
-        fn id(&self) -> &str { "gov.deny" }
+        fn id(&self) -> &str {
+            "gov.deny"
+        }
         fn govern(&self, _c: &str, _a: &Value) -> Verdict {
-            Verdict::Deny { reason: "no".into() }
+            Verdict::Deny {
+                reason: "no".into(),
+            }
         }
     }
 
@@ -311,12 +348,19 @@ mod tests {
     fn happy_path_executes_and_records() {
         let reg = registry_with("alert.raise", serde_json::json!({"type":"object"}));
         let mut stream = EventStream::spawn(MemorySink::new());
-        let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
-        let out = p.dispatch(EffectRequest {
-            capability: "alert.raise".into(),
-            args: serde_json::json!({"level":"high"}),
-            correlation: None,
-        }).unwrap();
+        let p = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let out = p
+            .dispatch(EffectRequest {
+                capability: "alert.raise".into(),
+                args: serde_json::json!({"level":"high"}),
+                correlation: None,
+            })
+            .unwrap();
         assert_eq!(out.capability, "alert.raise");
         stream.shutdown();
     }
@@ -325,12 +369,19 @@ mod tests {
     fn deny_blocks_before_execution() {
         let reg = registry_with("cap.shell", serde_json::json!({"type":"object"}));
         let mut stream = EventStream::spawn(MemorySink::new());
-        let p = Pipeline { registry: &reg, governor: &DenyAll, executor: &EchoExecutor, events: &stream };
-        let err = p.dispatch(EffectRequest {
-            capability: "cap.shell".into(),
-            args: serde_json::json!({}),
-            correlation: None,
-        }).unwrap_err();
+        let p = Pipeline {
+            registry: &reg,
+            governor: &DenyAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let err = p
+            .dispatch(EffectRequest {
+                capability: "cap.shell".into(),
+                args: serde_json::json!({}),
+                correlation: None,
+            })
+            .unwrap_err();
         assert!(matches!(err, PipelineError::Rejected(_)));
         stream.shutdown();
     }
@@ -339,25 +390,43 @@ mod tests {
     fn unresolved_capability_fails_at_resolve() {
         let reg = CapabilityRegistry::new();
         let mut stream = EventStream::spawn(MemorySink::new());
-        let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
-        let err = p.dispatch(EffectRequest {
-            capability: "nope".into(), args: Value::Null, correlation: None,
-        }).unwrap_err();
+        let p = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let err = p
+            .dispatch(EffectRequest {
+                capability: "nope".into(),
+                args: Value::Null,
+                correlation: None,
+            })
+            .unwrap_err();
         assert!(matches!(err, PipelineError::Unresolved { .. }));
         stream.shutdown();
     }
 
     #[test]
     fn invalid_args_fail_at_validate() {
-        let reg = registry_with("cap.fs.write",
-            serde_json::json!({"type":"object","required":["path"]}));
+        let reg = registry_with(
+            "cap.fs.write",
+            serde_json::json!({"type":"object","required":["path"]}),
+        );
         let mut stream = EventStream::spawn(MemorySink::new());
-        let p = Pipeline { registry: &reg, governor: &AllowAll, executor: &EchoExecutor, events: &stream };
-        let err = p.dispatch(EffectRequest {
-            capability: "cap.fs.write".into(),
-            args: serde_json::json!({"wrong":"key"}),
-            correlation: None,
-        }).unwrap_err();
+        let p = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let err = p
+            .dispatch(EffectRequest {
+                capability: "cap.fs.write".into(),
+                args: serde_json::json!({"wrong":"key"}),
+                correlation: None,
+            })
+            .unwrap_err();
         match err {
             PipelineError::Invalid { reason, .. } => assert!(reason.contains("path")),
             other => panic!("expected Invalid, got {other:?}"),

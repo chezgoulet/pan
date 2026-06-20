@@ -23,7 +23,12 @@ impl Provider for OneInvoke {
     fn id(&self) -> &str {
         "provider.stub"
     }
-    fn decide(&self, _g: &Goal, _ctx: &Context, _caps: &[pan_core::schema::Capability]) -> Decision {
+    fn decide(
+        &self,
+        _g: &Goal,
+        _ctx: &Context,
+        _caps: &[pan_core::schema::Capability],
+    ) -> Decision {
         Decision {
             intents: vec![
                 ActionIntent::Invoke {
@@ -53,7 +58,7 @@ fn wave_0_exit() {
     // Wire the event stream with an in-memory sink we can inspect.
     let sink = MemorySink::new();
     let events_handle = sink.handle();
-    let (stream, guard) = EventStream::spawn(sink);
+    let mut stream = EventStream::spawn(sink);
 
     // Always-allow govern stage + echo executor = trivial end-to-end path.
     let pipeline = Pipeline {
@@ -83,12 +88,17 @@ fn wave_0_exit() {
     assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
 
     // Close the stream and join the consumer so all events are collected.
-    stream.shutdown(guard);
+    stream.shutdown();
 
     // "...and sees the event on the stream." Assert the Effected event landed.
     let events = events_handle.lock().unwrap();
     let saw_effected = events.iter().any(|e| {
-        matches!(&e.kind, EventKind::Effected { capability, .. } if capability == "stub.cap")
+        matches!(
+            &e.kind,
+            EventKind::Effected {
+                capability, ..
+            } if capability == "stub.cap"
+        )
     });
     assert!(saw_effected, "the Effected event must appear on the stream");
 

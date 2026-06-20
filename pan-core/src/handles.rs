@@ -52,7 +52,9 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        Self { facts: Arc::new(std::sync::RwLock::new(Vec::new())) }
+        Self {
+            facts: Arc::new(std::sync::RwLock::new(Vec::new())),
+        }
     }
 
     /// Owner-only write. Note this lives on `MemoryStore`, NOT on `MemoryQuery`.
@@ -65,7 +67,9 @@ impl MemoryStore {
     /// The returned trait object shares the same backing storage (so later
     /// writes by the owner are visible) but exposes only `retrieve`.
     pub fn grant_query(&self) -> Arc<dyn MemoryQuery> {
-        Arc::new(QueryHandle { facts: Arc::clone(&self.facts) })
+        Arc::new(QueryHandle {
+            facts: Arc::clone(&self.facts),
+        })
     }
 }
 
@@ -95,8 +99,13 @@ mod tests {
     fn granted_handle_can_read_owner_writes() {
         let store = MemoryStore::new();
         let handle = store.grant_query(); // a context plugin would hold this
-        store.remember(Fact { key: "name".into(), body: "the user is Sam".into() });
-        let hits = handle.retrieve(&Query { needle: "Sam".into() });
+        store.remember(Fact {
+            key: "name".into(),
+            body: "the user is Sam".into(),
+        });
+        let hits = handle.retrieve(&Query {
+            needle: "Sam".into(),
+        });
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key, "name");
     }
@@ -105,9 +114,23 @@ mod tests {
     fn handle_sees_writes_made_after_granting() {
         let store = MemoryStore::new();
         let handle = store.grant_query();
-        assert!(handle.retrieve(&Query { needle: "later".into() }).is_empty());
-        store.remember(Fact { key: "k".into(), body: "added later".into() });
-        assert_eq!(handle.retrieve(&Query { needle: "later".into() }).len(), 1);
+        assert!(handle
+            .retrieve(&Query {
+                needle: "later".into()
+            })
+            .is_empty());
+        store.remember(Fact {
+            key: "k".into(),
+            body: "added later".into(),
+        });
+        assert_eq!(
+            handle
+                .retrieve(&Query {
+                    needle: "later".into()
+                })
+                .len(),
+            1
+        );
     }
 
     // COMPILE-TIME ENFORCEMENT (the actual point of this module).
@@ -135,7 +158,10 @@ mod tests {
             // there is no `q.remember(...)` to call here — it does not exist.
         }
         let store = MemoryStore::new();
-        store.remember(Fact { key: "a".into(), body: "x".into() });
+        store.remember(Fact {
+            key: "a".into(),
+            body: "x".into(),
+        });
         let handle = store.grant_query();
         assert_eq!(only_reads(handle.as_ref()), 1);
     }
