@@ -15,6 +15,10 @@
 //!   lifecycle (conflict = error, never last-wins).
 //! - [`handles`] — scoped capability handles; the read-only grant that *cannot*
 //!   write, enforced by the type system.
+//! - [`config`] — TOML config system with imports, env var expansion, and PAN_
+//!   overrides.
+//! - [`plugind`] — the plugin manager: discovery, Wasm loading (via wasmtime),
+//!   atomic PluginSet, SIGHUP reload, and health probes.
 //!
 //! What is deliberately ABSENT from the core: prompts, tokens, models, chat
 //! messages, tool-call conventions. Those live inside the `provider.llm` plugin.
@@ -26,22 +30,26 @@
 //! capability, and sees the event on the stream.* That test is
 //! [`tests::wave0_exit_test`] below.
 
+pub mod config;
 pub mod events;
 pub mod handles;
 pub mod loop_engine;
 pub mod pipeline;
+pub mod plugind;
 pub mod providers;
 pub mod registry;
 pub mod schema;
 
 // A small, curated public prelude so downstream plugin crates have one import.
 pub mod prelude {
+    pub use crate::config::Config;
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
     pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
     };
+    pub use crate::plugind::{PluginHealth, PluginManager, PluginSet, PlugindError};
     pub use crate::registry::{
         CapabilityRegistry, ConflictError, Lifecycle, LifecycleError, Plugin, PluginError,
     };
