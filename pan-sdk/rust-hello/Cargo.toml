@@ -1,0 +1,13 @@
+[package]
+name = "pan-plugin-hello"
+version = "0.1.0"
+edition = "2021"
+description = "Example Rust Wasm plugin for Pan"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"  # optimize for size
+lto = true
+strip = true
