@@ -240,7 +240,7 @@ mod tests {
     fn dead_letter_counter_tracks_errors() {
         let counter = Arc::new(AtomicU64::new(0));
         counter.fetch_add(3, Ordering::SeqCst);
-        let state = HealthState {
+        let mut state = HealthState {
             dead_letter_count: counter,
             ..Default::default()
         };

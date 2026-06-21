@@ -40,16 +40,9 @@ pub enum EventKind {
     /// The provider returned a decision with this many intents.
     Decided { provider: String, intents: usize },
     /// A world-effecting intent entered the dispatch pipeline.
-    DispatchStarted {
-        capability: String,
-        correlation: Option<String>,
-    },
+    DispatchStarted { capability: String, correlation: Option<String> },
     /// A pipeline stage finished (allow/deny/error surfaces here).
-    StageCompleted {
-        stage: String,
-        capability: String,
-        status: StageStatus,
-    },
+    StageCompleted { stage: String, capability: String, status: StageStatus },
     /// An effect fully executed and its result was recorded.
     Effected { capability: String, result: Value },
     /// Content was emitted to channels.
@@ -103,9 +96,7 @@ pub struct MemorySink {
 }
 impl MemorySink {
     pub fn new() -> Self {
-        Self {
-            events: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self { events: Arc::new(Mutex::new(Vec::new())) }
     }
     /// A shared handle to inspect collected events from the emitting side.
     pub fn handle(&self) -> Arc<Mutex<Vec<Event>>> {
@@ -247,20 +238,15 @@ mod tests {
     fn events_arrive_in_sequence_order() {
         let sink = MemorySink::new();
         let events = sink.handle();
-        let stream = EventStream::spawn(sink);
+        let mut stream = EventStream::spawn(sink);
         for i in 0..100 {
-            stream.emit(EventKind::Expressed {
-                body: format!("{i}"),
-            });
+            stream.emit(EventKind::Expressed { body: format!("{i}") });
         }
         stream.shutdown(); // close + join the consumer
         let collected = events.lock().unwrap();
         assert_eq!(collected.len(), 100);
         for (i, ev) in collected.iter().enumerate() {
-            assert_eq!(
-                ev.seq, i as u64,
-                "sequence numbers must be dense and ordered"
-            );
+            assert_eq!(ev.seq, i as u64, "sequence numbers must be dense and ordered");
         }
     }
 
@@ -269,9 +255,7 @@ mod tests {
         let sink = MemorySink::new();
         let events = sink.handle();
         let stream = EventStream::spawn(sink);
-        stream.emit(EventKind::Expressed {
-            body: "hello".into(),
-        });
+        stream.emit(EventKind::Expressed { body: "hello".into() });
         // Explicit drop closes the channel and joins the consumer.
         drop(stream);
         let collected = events.lock().unwrap();
@@ -330,9 +314,7 @@ mod tests {
     #[test]
     fn shutdown_timeout_eventually_joins() {
         let mut stream = EventStream::spawn(DiscardSink);
-        stream.emit(EventKind::Expressed {
-            body: "test".into(),
-        });
+        stream.emit(EventKind::Expressed { body: "test".into() });
         // Should complete within 1s — the consumer is fast.
         stream.shutdown_timeout(Duration::from_secs(1));
         // If we got here, the timeout path didn't deadlock.
@@ -342,22 +324,13 @@ mod tests {
     fn emit_ignores_closed_stream() {
         let sink = MemorySink::new();
         let events = sink.handle();
-        let stream = EventStream::spawn(sink);
-        stream.emit(EventKind::Expressed {
-            body: "before".into(),
-        });
+        let mut stream = EventStream::spawn(sink);
+        stream.emit(EventKind::Expressed { body: "before".into() });
         stream.shutdown();
         // Emit after shutdown is silently dropped (fail-open for observation).
-        stream.emit(EventKind::Expressed {
-            body: "after".into(),
-        });
+        stream.emit(EventKind::Expressed { body: "after".into() });
         let collected = events.lock().unwrap();
         assert_eq!(collected.len(), 1);
-        assert_eq!(
-            collected[0].kind,
-            EventKind::Expressed {
-                body: "before".into()
-            }
-        );
+        assert_eq!(collected[0].kind, EventKind::Expressed { body: "before".into() });
     }
 }

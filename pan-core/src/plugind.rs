@@ -43,6 +43,7 @@ pub use plugin_set::PluginSet;
 pub struct PluginManifest {
     #[serde(rename = "plugin")]
     pub meta: ManifestMeta,
+    #[serde(default)]
     pub capabilities: ManifestCapabilities,
 }
 
@@ -52,7 +53,7 @@ pub struct ManifestMeta {
     pub version: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ManifestCapabilities {
     #[serde(default)]
     pub provides: Vec<String>,
@@ -169,7 +170,7 @@ impl Plugin for WasmPlugin {
 /// A native (in-process) plugin, registered via a closure.
 pub struct NativePlugin {
     id: String,
-    provision_fn: Box<dyn FnOnce() -> Result<(), PluginError> + Send>,
+    provision_fn: Option<Box<dyn FnOnce() -> Result<(), PluginError> + Send>>,
     validate_fn: Box<dyn Fn() -> Result<(), PluginError> + Send>,
     run_fn: Box<dyn FnMut() -> Result<(), PluginError> + Send>,
     cleanup_fn: Box<dyn FnMut() + Send>,
@@ -307,7 +308,7 @@ impl PluginManager {
             capability_index.clone(),
         ));
 
-        let mut lifecycle = Lifecycle::new();
+        let lifecycle = Lifecycle::new();
         // TODO(#62): instantiate wasmtime instances and register them here.
         // For now, native-only plugins work; Wasm plugins are stubs.
         // lifecycle.register(Box::new(wasm_plugin));
@@ -356,7 +357,7 @@ impl PluginManager {
             .collect();
         let new_set = Arc::new(PluginSet::new(plugin_arcs, capability_index));
 
-        let mut new_lifecycle = Lifecycle::new();
+        let new_lifecycle = Lifecycle::new();
 
         // Phase 3: swap.
         self.set = new_set;
@@ -612,7 +613,7 @@ version = "0.1.0"
     }
 
     #[test]
-    fn discovery_scans_directory() {
+    fn discovery_scans_directory() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join("pan_test_discovery");
         let _ = fs::create_dir_all(&dir);
 
@@ -633,6 +634,7 @@ version = "0.1.0"
         let (plugins, _) = discover_all(&[dir.clone()]).unwrap();
         assert_eq!(plugins.len(), 1, "should discover the fake wasm file");
         assert_eq!(plugins[0].id(), "test-plugin");
+        Ok(())
     }
 
     #[test]
@@ -643,7 +645,7 @@ version = "0.1.0"
     }
 
     #[test]
-    fn plugin_set_lookup() {
+    fn plugin_set_lookup() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join("pan_test_pset");
         let _ = fs::create_dir_all(&dir);
         let d1 = dir.join("p1.wasm");
@@ -684,5 +686,6 @@ version = "1.0"
         let provider = set.provider_for("cap.a");
         assert!(provider.is_some());
         assert_eq!(provider.unwrap().id(), "p1");
+        Ok(())
     }
 }
