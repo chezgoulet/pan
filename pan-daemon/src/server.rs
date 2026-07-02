@@ -174,8 +174,12 @@ pub fn serve_loopback(port: u16) -> io::Result<()> {
     eprintln!("pan serve: bound 127.0.0.1:{actual}");
     loop {
         let stream = server.accept_one()?;
-        // Drive synchronously; the next accept waits for the next host.
-        Server::drive(stream)?;
+        // Drive synchronously; the next accept waits for the next host. A
+        // connection-level error (host crashed, reset mid-frame) must never
+        // kill the daemon — log it and wait for the next host.
+        if let Err(e) = Server::drive(stream) {
+            eprintln!("pan serve: connection error: {e}; awaiting next host");
+        }
     }
 }
 
