@@ -14,7 +14,7 @@ use pan_core::loop_engine::{Loop, Once, RunEnd};
 use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline};
 use pan_core::registry::CapabilityRegistry;
 use pan_core::schema::{
-    ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger, Value,
+    ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger,
 };
 
 /// A stub provider that emits exactly one Invoke and then concludes.

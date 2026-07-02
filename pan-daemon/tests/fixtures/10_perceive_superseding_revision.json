@@ -1,0 +1,24 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 5,
+    "type": "perceive",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal": {
+        "id": "conv_00042",
+        "revision": 2,
+        "objective": "The player walked away mid-conversation.",
+        "trigger": {
+          "kind": "event",
+          "topic": "dialogue.abandoned",
+          "payload": {}
+        }
+      },
+      "context": {
+        "fragments": []
+      }
+    }
+  }
+}

@@ -33,18 +33,14 @@ pub mod llm {
             for f in &ctx.fragments {
                 p.push_str(&format!("[{}] {}\n", f.channel, f.body));
             }
-            p.push_str(&format!(
-                "You may call: {:?}\n",
-                caps.iter().map(|c| &c.id).collect::<Vec<_>>()
-            ));
+            p.push_str(&format!("You may call: {:?}\n",
+                caps.iter().map(|c| &c.id).collect::<Vec<_>>()));
             p
         }
     }
 
     impl Provider for LlmProvider {
-        fn id(&self) -> &str {
-            "provider.llm"
-        }
+        fn id(&self) -> &str { "provider.llm" }
 
         fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
             let _prompt = self.build_prompt(goal, ctx, caps);
@@ -52,18 +48,14 @@ pub mod llm {
             // Stubbed deterministic behavior: greet + remember + conclude.
             Decision {
                 intents: vec![
-                    ActionIntent::Express {
-                        body: "Hello, I can help with that.".into(),
-                    },
+                    ActionIntent::Express { body: "Hello, I can help with that.".into() },
                     // State-write is an Invoke of a capability, not a Mutate.
                     ActionIntent::Invoke {
                         capability: "cap.state_write".into(),
                         args: serde_json::json!({"path": "last_seen", "value": "now"}),
                         correlation: None,
                     },
-                    ActionIntent::Conclude {
-                        outcome: Outcome::Achieved,
-                    },
+                    ActionIntent::Conclude { outcome: Outcome::Achieved },
                 ],
             }
         }
@@ -89,9 +81,7 @@ pub mod behaviortree {
     }
 
     impl Provider for BehaviorTreeProvider {
-        fn id(&self) -> &str {
-            "provider.behaviortree"
-        }
+        fn id(&self) -> &str { "provider.behaviortree" }
 
         fn decide(&self, _goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
             // Pure control flow. No prompt, no tokens, no chat. Emits the exact
@@ -104,9 +94,7 @@ pub mod behaviortree {
                         args: args.clone(),
                         correlation: None, // <-- not fabricated. BT has no need.
                     }),
-                    Node::Succeed => intents.push(ActionIntent::Conclude {
-                        outcome: Outcome::Achieved,
-                    }),
+                    Node::Succeed => intents.push(ActionIntent::Conclude { outcome: Outcome::Achieved }),
                 }
             }
             Decision { intents }
@@ -117,49 +105,69 @@ pub mod behaviortree {
 /// 3) Rules engine. Also no model. Fires the first matching rule and emits its
 /// prescribed action. Confirms "Invoke" really is the common shape and not a
 /// tool-call in disguise: here it's literally the right-hand side of a rule.
+///
+/// A rule has EITHER a `when_signal_over` (signal-name + strict-`>` threshold) OR
+/// a `when_event_topic` (exact-match on a `Trigger::Event.topic`). Exactly one
+/// of the two is set; the provider matches the trigger type. The action side
+/// (`then_invoke`) is the same `Invoke(capability, args, no correlation)` every
+/// other provider emits — no field is unique to rules.
 pub mod rules {
     use super::*;
     use crate::schema::Provider;
 
+    #[derive(Debug, Clone)]
     pub struct Rule {
-        pub when_signal_over: (String, f64), // (signal name, threshold)
-        pub then_invoke: (String, Value),    // (capability id, args)
+        /// Match a `Trigger::Signal { name, value }` whose name == .0 and value > .1.
+        pub when_signal_over: Option<(String, f64)>,
+        /// Match a `Trigger::Event { topic, .. }` whose topic == this string.
+        pub when_event_topic: Option<String>,
+        /// The action: (capability id, args).
+        pub then_invoke: (String, Value),
     }
 
     pub struct RulesProvider {
         pub rules: Vec<Rule>,
     }
 
-    impl Provider for RulesProvider {
-        fn id(&self) -> &str {
-            "provider.rules"
+    impl RulesProvider {
+        /// First rule whose `when` matches `goal.trigger`; `None` if none fire.
+        fn match_rule<'a>(&'a self, goal: &Goal) -> Option<&'a Rule> {
+            match &goal.trigger {
+                Trigger::Signal { name, value } => self.rules.iter().find(|r| {
+                    r.when_signal_over.as_ref()
+                        .map(|(n, t)| n == name && *value > *t)
+                        .unwrap_or(false)
+                }),
+                Trigger::Event { topic, .. } => self.rules.iter().find(|r| {
+                    r.when_event_topic.as_deref() == Some(topic.as_str())
+                }),
+                // Tick and Utterance: rules don't fire (rules react to conditions,
+                // not user speech). A rules engine's "react to event/signal"
+                // design is what distinguishes it from an LLM; an idle tick with
+                // no event falls through and the provider says "continue".
+                Trigger::Tick { .. } | Trigger::Utterance { .. } => None,
+            }
         }
+    }
+
+    impl Provider for RulesProvider {
+        fn id(&self) -> &str { "provider.rules" }
 
         fn decide(&self, goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
-            if let Trigger::Signal { name, value } = &goal.trigger {
-                for r in &self.rules {
-                    if &r.when_signal_over.0 == name && *value > r.when_signal_over.1 {
-                        return Decision {
-                            intents: vec![
-                                ActionIntent::Invoke {
-                                    capability: r.then_invoke.0.clone(),
-                                    args: r.then_invoke.1.clone(),
-                                    correlation: None,
-                                },
-                                ActionIntent::Conclude {
-                                    outcome: Outcome::Achieved,
-                                },
-                            ],
-                        };
-                    }
-                }
+            if let Some(r) = self.match_rule(goal) {
+                return Decision {
+                    intents: vec![
+                        ActionIntent::Invoke {
+                            capability: r.then_invoke.0.clone(),
+                            args: r.then_invoke.1.clone(),
+                            correlation: None,
+                        },
+                        ActionIntent::Conclude { outcome: Outcome::Achieved },
+                    ],
+                };
             }
             // No rule fired: explicitly say "still going / nothing to do".
-            Decision {
-                intents: vec![ActionIntent::Conclude {
-                    outcome: Outcome::Continue,
-                }],
-            }
+            Decision { intents: vec![ActionIntent::Conclude { outcome: Outcome::Continue }] }
         }
     }
 }
@@ -179,49 +187,26 @@ mod tests {
 
     #[test]
     fn llm_emits_contract_types_only() {
-        let p = llm::LlmProvider {
-            model: "any".into(),
-        };
-        let g = Goal {
-            id: "g1".into(),
-            revision: 0,
-            objective: "greet".into(),
-            trigger: Trigger::Utterance {
-                from: "u".into(),
-                content: "hi".into(),
-            },
-        };
+        let p = llm::LlmProvider { model: "any".into() };
+        let g = Goal { id: "g1".into(), revision: 0, objective: "greet".into(),
+            trigger: Trigger::Utterance { from: "u".into(), content: "hi".into() } };
         let d = p.decide(&g, &Context::default(), &caps());
-        assert!(d
-            .intents
-            .iter()
-            .any(|i| matches!(i, ActionIntent::Conclude { .. })));
+        assert!(d.intents.iter().any(|i| matches!(i, ActionIntent::Conclude { .. })));
     }
 
     #[test]
     fn behavior_tree_emits_identical_invoke_shape() {
         let p = behaviortree::BehaviorTreeProvider {
             root: vec![
-                behaviortree::Node::Action {
-                    capability: "npc.move".into(),
-                    args: serde_json::json!({"to":"door"}),
-                },
+                behaviortree::Node::Action { capability: "npc.move".into(), args: serde_json::json!({"to":"door"}) },
                 behaviortree::Node::Succeed,
             ],
         };
-        let g = Goal {
-            id: "g2".into(),
-            revision: 0,
-            objective: "patrol".into(),
-            trigger: Trigger::Tick { sequence: 5 },
-        };
+        let g = Goal { id: "g2".into(), revision: 0, objective: "patrol".into(),
+            trigger: Trigger::Tick { sequence: 5 } };
         let d = p.decide(&g, &Context::default(), &[]);
         match &d.intents[0] {
-            ActionIntent::Invoke {
-                capability,
-                correlation,
-                ..
-            } => {
+            ActionIntent::Invoke { capability, correlation, .. } => {
                 assert_eq!(capability, "npc.move");
                 assert!(correlation.is_none()); // never fabricated
             }
@@ -233,27 +218,67 @@ mod tests {
     fn rules_invoke_is_the_same_type_as_a_tool_call() {
         let p = rules::RulesProvider {
             rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
+                when_signal_over: Some(("temp".into(), 80.0)),
+                when_event_topic: None,
                 then_invoke: ("alert.raise".into(), serde_json::json!({"level":"high"})),
             }],
         };
-        let g = Goal {
-            id: "g3".into(),
-            revision: 0,
-            objective: "watch temp".into(),
-            trigger: Trigger::Signal {
-                name: "temp".into(),
-                value: 91.0,
-            },
-        };
+        let g = Goal { id: "g3".into(), revision: 0, objective: "watch temp".into(),
+            trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } };
         let d = p.decide(&g, &Context::default(), &caps());
-        assert_eq!(
-            d.intents[0],
-            ActionIntent::Invoke {
-                capability: "alert.raise".into(),
-                args: serde_json::json!({"level":"high"}),
-                correlation: None,
-            }
-        );
+        assert_eq!(d.intents[0], ActionIntent::Invoke {
+            capability: "alert.raise".into(),
+            args: serde_json::json!({"level":"high"}),
+            correlation: None,
+        });
+    }
+
+    /// A `Trigger::Event` with a topic matching a rule's `when_event_topic` MUST
+    /// fire that rule's `then_invoke` — the daemon's per-soul event rules depend
+    /// on this. Asserts the result is a specific `ActionIntent::Invoke`.
+    #[test]
+    fn event_topic_fires_matching_rule() {
+        let p = rules::RulesProvider {
+            rules: vec![rules::Rule {
+                when_signal_over: None,
+                when_event_topic: Some("combat.crew_saved".into()),
+                then_invoke: ("npc.move_to".into(),
+                    serde_json::json!({"room": "cockpit"})),
+            }],
+        };
+        let g = Goal { id: "g_evt".into(), revision: 1, objective: "react".into(),
+            trigger: Trigger::Event {
+                topic: "combat.crew_saved".into(),
+                payload: serde_json::json!({"saved_by": "player"}),
+            } };
+        let d = p.decide(&g, &Context::default(), &[]);
+        assert_eq!(d.intents[0], ActionIntent::Invoke {
+            capability: "npc.move_to".into(),
+            args: serde_json::json!({"room": "cockpit"}),
+            correlation: None,
+        });
+        // The closing Conclude is Achieved (a rule fired), not Continue.
+        assert!(d.intents.iter().any(|i| matches!(
+            i, ActionIntent::Conclude { outcome: Outcome::Achieved }
+        )));
+    }
+
+    /// Non-matching topic → no rule fires → Continue. (Same semantics as the
+    /// signal-side no-match path.)
+    #[test]
+    fn event_with_no_matching_rule_falls_through_to_continue() {
+        let p = rules::RulesProvider {
+            rules: vec![rules::Rule {
+                when_signal_over: None,
+                when_event_topic: Some("combat.crew_saved".into()),
+                then_invoke: ("npc.move_to".into(), serde_json::json!({})),
+            }],
+        };
+        let g = Goal { id: "g".into(), revision: 0, objective: "x".into(),
+            trigger: Trigger::Event { topic: "ship.docked".into(), payload: serde_json::json!({}) } };
+        let d = p.decide(&g, &Context::default(), &[]);
+        assert!(d.intents.iter().all(|i| matches!(
+            i, ActionIntent::Conclude { outcome: Outcome::Continue }
+        )));
     }
 }

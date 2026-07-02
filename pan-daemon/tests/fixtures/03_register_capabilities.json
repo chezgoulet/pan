@@ -1,0 +1,51 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 1,
+    "type": "register_capabilities",
+    "body": {
+      "capabilities": [
+        {
+          "id": "npc.move_to",
+          "summary": "Walk to a room on the current ship or station.",
+          "args_schema": {
+            "type": "object",
+            "required": [
+              "room"
+            ],
+            "properties": {
+              "room": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "id": "npc.remember",
+          "summary": "Commit a memory. Goes through the governed path to the memory store.",
+          "args_schema": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "importance": {
+                "type": "number"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

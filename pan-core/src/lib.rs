@@ -15,9 +15,6 @@
 //!   lifecycle (conflict = error, never last-wins).
 //! - [`handles`] — scoped capability handles; the read-only grant that *cannot*
 //!   write, enforced by the type system.
-//! - [`plugind`] — the plugin manager: discovery, Wasm loading (via wasmtime),
-//!   atomic PluginSet, SIGHUP reload, and health probes.
-//! - [`health`] — a `/health` HTTP endpoint on a localhost admin port.
 //!
 //! What is deliberately ABSENT from the core: prompts, tokens, models, chat
 //! messages, tool-call conventions. Those live inside the `provider.llm` plugin.
@@ -31,10 +28,8 @@
 
 pub mod events;
 pub mod handles;
-pub mod health;
 pub mod loop_engine;
 pub mod pipeline;
-pub mod plugind;
 pub mod providers;
 pub mod registry;
 pub mod schema;
@@ -43,12 +38,10 @@ pub mod schema;
 pub mod prelude {
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
-    pub use crate::health::{HealthServer, HealthState, HealthStatus};
     pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
     };
-    pub use crate::plugind::{PluginHealth, PluginManager, PluginSet, PlugindError};
     pub use crate::registry::{
         CapabilityRegistry, ConflictError, Lifecycle, LifecycleError, Plugin, PluginError,
     };
@@ -78,22 +71,16 @@ mod tests {
         // A stub provider that emits exactly one Invoke and then concludes.
         struct OneInvoke;
         impl Provider for OneInvoke {
-            fn id(&self) -> &str {
-                "provider.stub"
-            }
+            fn id(&self) -> &str { "provider.stub" }
             fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
-                Decision {
-                    intents: vec![
-                        ActionIntent::Invoke {
-                            capability: "stub.cap".into(),
-                            args: serde_json::json!({"ok": true}),
-                            correlation: Some("corr-1".into()),
-                        },
-                        ActionIntent::Conclude {
-                            outcome: Outcome::Achieved,
-                        },
-                    ],
-                }
+                Decision { intents: vec![
+                    ActionIntent::Invoke {
+                        capability: "stub.cap".into(),
+                        args: serde_json::json!({"ok": true}),
+                        correlation: Some("corr-1".into()),
+                    },
+                    ActionIntent::Conclude { outcome: Outcome::Achieved },
+                ]}
             }
         }
 
@@ -103,8 +90,7 @@ mod tests {
             id: "stub.cap".into(),
             summary: "a stub capability".into(),
             args_schema: serde_json::json!({"type": "object"}),
-        })
-        .unwrap();
+        }).unwrap();
 
         // Wire the event stream with an in-memory sink we can inspect.
         let sink = MemorySink::new();
@@ -121,15 +107,9 @@ mod tests {
 
         // Drive one discrete span.
         let provider = OneInvoke;
-        let lp = Loop {
-            provider: &provider,
-            pipeline: &pipeline,
-            events: &stream,
-        };
+        let lp = Loop { provider: &provider, pipeline: &pipeline, events: &stream };
         let mut obs = Once(Some(Goal {
-            id: "run-1".into(),
-            revision: 0,
-            objective: "do the thing".into(),
+            id: "run-1".into(), revision: 0, objective: "do the thing".into(),
             trigger: Trigger::Tick { sequence: 1 },
         }));
         let report = lp.run_span(&mut obs, &Context::default());
@@ -143,11 +123,9 @@ mod tests {
 
         // "...and sees the event on the stream." Assert the Effected event landed.
         let events = events_handle.lock().unwrap();
-        let saw_effected = events.iter().any(|e| {
-            matches!(
-                &e.kind, EventKind::Effected { capability, .. } if capability == "stub.cap"
-            )
-        });
+        let saw_effected = events.iter().any(|e| matches!(
+            &e.kind, EventKind::Effected { capability, .. } if capability == "stub.cap"
+        ));
         assert!(saw_effected, "the Effected event must appear on the stream");
 
         // Sequence numbers are dense and ordered (the stream's ordering guarantee).
@@ -169,12 +147,8 @@ mod tests {
             Box::new(rules::RulesProvider { rules: vec![] }),
         ];
         for p in &providers {
-            let g = Goal {
-                id: "g".into(),
-                revision: 0,
-                objective: "o".into(),
-                trigger: Trigger::Tick { sequence: 1 },
-            };
+            let g = Goal { id: "g".into(), revision: 0, objective: "o".into(),
+                trigger: Trigger::Tick { sequence: 1 } };
             let _d: Decision = p.decide(&g, &Context::default(), &[]);
             assert!(!p.id().is_empty());
         }
@@ -185,73 +159,36 @@ mod tests {
     #[test]
     fn all_three_drive_the_same_pipeline() {
         let mut reg = CapabilityRegistry::new();
-        reg.register(Capability {
-            id: "cap.state_write".into(),
-            summary: "".into(),
-            args_schema: serde_json::json!({"type":"object"}),
-        })
-        .unwrap();
-        reg.register(Capability {
-            id: "npc.move".into(),
-            summary: "".into(),
-            args_schema: serde_json::json!({"type":"object"}),
-        })
-        .unwrap();
-        reg.register(Capability {
-            id: "alert.raise".into(),
-            summary: "".into(),
-            args_schema: serde_json::json!({"type":"object"}),
-        })
-        .unwrap();
+        reg.register(Capability { id: "cap.state_write".into(), summary: "".into(),
+            args_schema: serde_json::json!({"type":"object"}) }).unwrap();
+        reg.register(Capability { id: "npc.move".into(), summary: "".into(),
+            args_schema: serde_json::json!({"type":"object"}) }).unwrap();
+        reg.register(Capability { id: "alert.raise".into(), summary: "".into(),
+            args_schema: serde_json::json!({"type":"object"}) }).unwrap();
 
         let providers: Vec<Box<dyn Provider>> = vec![
             Box::new(llm::LlmProvider { model: "x".into() }),
-            Box::new(behaviortree::BehaviorTreeProvider {
-                root: vec![
-                    behaviortree::Node::Action {
-                        capability: "npc.move".into(),
-                        args: serde_json::json!({}),
-                    },
-                    behaviortree::Node::Succeed,
-                ],
-            }),
-            Box::new(rules::RulesProvider {
-                rules: vec![rules::Rule {
-                    when_signal_over: ("temp".into(), 80.0),
-                    then_invoke: ("alert.raise".into(), serde_json::json!({})),
-                }],
-            }),
+            Box::new(behaviortree::BehaviorTreeProvider { root: vec![
+                behaviortree::Node::Action { capability: "npc.move".into(), args: serde_json::json!({}) },
+                behaviortree::Node::Succeed,
+            ]}),
+            Box::new(rules::RulesProvider { rules: vec![rules::Rule {
+                when_signal_over: Some(("temp".into(), 80.0)),
+                when_event_topic: None,
+                then_invoke: ("alert.raise".into(), serde_json::json!({})),
+            }]}),
         ];
 
         // A trigger that satisfies all three (the rules provider needs a Signal).
         for p in &providers {
             let mut stream = EventStream::spawn(MemorySink::new());
-            let pipeline = Pipeline {
-                registry: &reg,
-                governor: &AllowAll,
-                executor: &EchoExecutor,
-                events: &stream,
-            };
-            let lp = Loop {
-                provider: p.as_ref(),
-                pipeline: &pipeline,
-                events: &stream,
-            };
-            let mut obs = Once(Some(Goal {
-                id: "g".into(),
-                revision: 0,
-                objective: "o".into(),
-                trigger: Trigger::Signal {
-                    name: "temp".into(),
-                    value: 91.0,
-                },
-            }));
+            let pipeline = Pipeline { registry: &reg, governor: &AllowAll,
+                executor: &EchoExecutor, events: &stream };
+            let lp = Loop { provider: p.as_ref(), pipeline: &pipeline, events: &stream };
+            let mut obs = Once(Some(Goal { id: "g".into(), revision: 0, objective: "o".into(),
+                trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } }));
             let report = lp.run_span(&mut obs, &Context::default());
-            assert!(
-                report.end.is_some(),
-                "provider {} produced no terminal state",
-                p.id()
-            );
+            assert!(report.end.is_some(), "provider {} produced no terminal state", p.id());
             stream.shutdown();
         }
     }

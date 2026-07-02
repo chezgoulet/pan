@@ -98,7 +98,8 @@ fn main() {
         "Rules",
         &rules::RulesProvider {
             rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
+                when_signal_over: Some(("temp".into(), 80.0)),
+                when_event_topic: None,
                 then_invoke: ("alert.raise".into(), serde_json::json!({ "level": "high" })),
             }],
         },

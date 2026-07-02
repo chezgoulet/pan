@@ -1,0 +1,22 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 2,
+    "type": "instantiate_soul",
+    "body": {
+      "soul_id": "example_pilot",
+      "mind": "llm",
+      "soul": {
+        "id": "example_pilot",
+        "name": "Example Pilot",
+        "personality": {
+          "traits": [
+            "loyal",
+            "quiet"
+          ]
+        }
+      }
+    }
+  }
+}

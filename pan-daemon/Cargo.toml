@@ -1,0 +1,20 @@
+[package]
+name = "pan-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The mind daemon: speaks the Soul Protocol over TCP loopback NDJSON."
+
+[dependencies]
+pan-core = { path = "../pan-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "pan"
+path = "src/bin/pan.rs"
+
+[dev-dependencies]
+# nothing extra — fixtures and jsonschema-style validation live inside the crate

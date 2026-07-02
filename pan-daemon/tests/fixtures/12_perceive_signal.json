@@ -1,0 +1,24 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 7,
+    "type": "perceive",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal": {
+        "id": "sig_hull_low",
+        "revision": 1,
+        "objective": "Hull integrity crossed a danger threshold.",
+        "trigger": {
+          "kind": "signal",
+          "name": "hull_integrity",
+          "value": 0.31
+        }
+      },
+      "context": {
+        "fragments": []
+      }
+    }
+  }
+}

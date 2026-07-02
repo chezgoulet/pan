@@ -1,0 +1,11 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 9,
+    "type": "release_soul",
+    "body": {
+      "soul_id": "example_pilot"
+    }
+  }
+}

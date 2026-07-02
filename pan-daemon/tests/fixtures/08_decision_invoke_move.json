@@ -1,0 +1,29 @@
+{
+  "direction": "daemon_to_host",
+  "message": {
+    "v": 0,
+    "seq": 2,
+    "re": 4,
+    "type": "decision",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal_id": "amb_00007",
+      "goal_revision": 1,
+      "decision": {
+        "intents": [
+          {
+            "intent": "invoke",
+            "capability": "npc.move_to",
+            "args": {
+              "room": "cockpit"
+            }
+          },
+          {
+            "intent": "conclude",
+            "outcome": "achieved"
+          }
+        ]
+      }
+    }
+  }
+}
