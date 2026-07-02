@@ -49,9 +49,16 @@ use crate::wire::{
     SERVER_IDENTITY, WelcomeBody,
 };
 
-/// The "minds" this daemon advertises in `welcome.minds`. M1 advertises rules
-/// only; llm/behavior_tree are reserved for future sprints.
-fn advertised_minds() -> Vec<MindKind> { vec![MindKind::Rules] }
+/// The "minds" this daemon advertises in `welcome.minds`: rules always; llm
+/// when an inference endpoint is configured and reachable (crate::llm);
+/// behavior_tree is reserved for a future sprint.
+fn advertised_minds() -> Vec<MindKind> {
+    let mut minds = vec![MindKind::Rules];
+    if crate::llm::resolve().is_some() {
+        minds.push(MindKind::Llm);
+    }
+    minds
+}
 
 /// Per-soul runtime state. For `mind: rules`, the rule list parsed from the
 /// soul birth-state. For other minds (M1 stub), no rules — the session falls
@@ -77,14 +84,18 @@ impl SoulState {
         SoulState { mind: body.mind, soul: body.soul.clone(), rules }
     }
 
-    /// Build a rules provider for this soul. For non-rules minds (which at
-    /// M1 have no provider), return `None` — the session emits a Continue-only
-    /// decision in that case.
-    fn provider(&self) -> Option<RulesProvider> {
+    /// Build this soul's mind. Rules and llm are live; a mind the daemon
+    /// can't host right now (behavior_tree, or llm with no endpoint
+    /// configured) degrades to `NoProvider` — a Continue-only decision, so
+    /// the host always gets a well-formed reply.
+    fn provider(&self) -> Box<dyn Provider> {
         match self.mind {
-            MindKind::Rules => Some(RulesProvider { rules: self.rules.clone() }),
-            // Future: behavior tree / LLM providers live here.
-            _ => None,
+            MindKind::Rules => Box::new(RulesProvider { rules: self.rules.clone() }),
+            MindKind::Llm => match crate::llm::resolve() {
+                Some(config) => Box::new(crate::llm::LlmProvider { config: config.clone() }),
+                None => Box::new(NoProvider),
+            },
+            _ => Box::new(NoProvider),
         }
     }
 }
@@ -337,13 +348,9 @@ impl Session {
             }))]);
         };
 
-        // Ask the provider for a decision. If the soul has no provider (a
-        // non-rules mind at M1), emit a Continue-only decision so the host
-        // sees the daemon acknowledged the perceive.
-        let provider: Box<dyn Provider> = match soul.provider() {
-            Some(rp) => Box::new(rp),
-            None => Box::new(NoProvider),
-        };
+        // Ask the soul's mind for a decision. Minds the daemon can't host
+        // degrade to a Continue-only decision inside `provider()`.
+        let provider: Box<dyn Provider> = soul.provider();
         let caps: Vec<Capability> = self.registry.all();
         let decision = provider.decide(&goal, &context, &caps);
 

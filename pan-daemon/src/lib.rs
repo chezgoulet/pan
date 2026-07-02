@@ -26,6 +26,7 @@
 
 pub mod conformance;
 pub mod governor;
+pub mod llm;
 pub mod server;
 pub mod session;
 pub mod wire;

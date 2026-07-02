@@ -87,6 +87,11 @@ fn run_serve(args: &[String]) -> ExitCode {
         .unwrap_or(DEFAULT_PORT);
 
     eprintln!("pan serve: binding 127.0.0.1:{port}");
+    // Resolve (and pre-load) the llm mind before the first host connects, so
+    // the first generated line of dialogue doesn't pay the model-load cost.
+    if let Some(config) = pan_daemon::llm::resolve() {
+        pan_daemon::llm::warm_up(config);
+    }
     if let Err(e) = serve_loopback(port) {
         eprintln!("server error: {e}");
         return ExitCode::from(1);
