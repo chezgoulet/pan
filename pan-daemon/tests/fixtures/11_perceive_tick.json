@@ -1,0 +1,28 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 6,
+    "type": "perceive",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal": {
+        "id": "idle_example_pilot",
+        "revision": 9,
+        "objective": "Idle heartbeat: choose ambient behavior.",
+        "trigger": {
+          "kind": "tick",
+          "sequence": 9
+        }
+      },
+      "context": {
+        "fragments": [
+          {
+            "channel": "world",
+            "body": "Off-shift. Galley is occupied by one crewmate you like."
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 3,
+    "type": "perceive",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal": {
+        "id": "conv_00042",
+        "revision": 1,
+        "objective": "Respond in character to the player.",
+        "trigger": {
+          "kind": "utterance",
+          "from": "player",
+          "content": "That fight got a little close. You alright?"
+        }
+      },
+      "context": {
+        "fragments": [
+          {
+            "channel": "persona",
+            "body": "You are the ship's pilot. Loyal, quiet, precise."
+          },
+          {
+            "channel": "memory",
+            "body": "The player put their ship between you and the pirate's last volley."
+          },
+          {
+            "channel": "history",
+            "body": "Docked at station five minutes ago after a pirate ambush."
+          },
+          {
+            "channel": "world",
+            "body": "Location: station bar. Ship hull at 62%."
+          }
+        ]
+      }
+    }
+  }
+}

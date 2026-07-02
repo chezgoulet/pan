@@ -1,0 +1,13 @@
+{
+  "direction": "daemon_to_host",
+  "message": {
+    "v": 0,
+    "seq": 3,
+    "re": 4,
+    "type": "error",
+    "body": {
+      "code": "unknown_capability",
+      "message": "provider requested 'npc.fly_ship' which was never registered"
+    }
+  }
+}

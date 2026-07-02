@@ -1,0 +1,32 @@
+{
+  "direction": "host_to_daemon",
+  "message": {
+    "v": 0,
+    "seq": 4,
+    "type": "perceive",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal": {
+        "id": "amb_00007",
+        "revision": 1,
+        "objective": "React to what just happened.",
+        "trigger": {
+          "kind": "event",
+          "topic": "combat.crew_saved",
+          "payload": {
+            "saved_by": "player",
+            "hull_damage_taken": 0.18
+          }
+        }
+      },
+      "context": {
+        "fragments": [
+          {
+            "channel": "world",
+            "body": "In-flight, combat just ended."
+          }
+        ]
+      }
+    }
+  }
+}

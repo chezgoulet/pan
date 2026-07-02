@@ -1,0 +1,39 @@
+{
+  "direction": "daemon_to_host",
+  "message": {
+    "v": 0,
+    "seq": 1,
+    "re": 3,
+    "type": "decision",
+    "body": {
+      "soul_id": "example_pilot",
+      "goal_id": "conv_00042",
+      "goal_revision": 1,
+      "decision": {
+        "intents": [
+          {
+            "intent": "express",
+            "body": "Been through worse. You took that hit for me \u2014 I noticed."
+          },
+          {
+            "intent": "invoke",
+            "capability": "npc.remember",
+            "args": {
+              "text": "They shielded me during the ambush.",
+              "importance": 0.8,
+              "tags": [
+                "player",
+                "trust"
+              ]
+            },
+            "correlation": "toolu_01"
+          },
+          {
+            "intent": "conclude",
+            "outcome": "achieved"
+          }
+        ]
+      }
+    }
+  }
+}
