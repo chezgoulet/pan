@@ -59,6 +59,35 @@ jobs:
       - name: Build all targets
         run: cargo build --all-targets
 
+  # ─── Soul Protocol integration harness ────────────────────────────
+  # The cross-repo gate: REACHLOCK's harness drives this repo's real
+  # `pan serve` binary through the full Soul Protocol lifecycle and every
+  # error path, using the shared fixtures (byte-identical across repos).
+  # It lives in reachlock/tests/soul-protocol-harness/; running it here
+  # keeps a pan change from silently breaking the wire contract.
+  soul-protocol-harness:
+    name: Soul Protocol integration harness
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pan
+      # (If chezgoulet/reachlock is private, give this checkout a PAT via
+      # `token:` — the default GITHUB_TOKEN only reaches this repo.)
+      - uses: actions/checkout@v4
+        with:
+          repository: chezgoulet/reachlock
+          ref: testing
+          path: reachlock
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build pan
+        working-directory: pan
+        run: cargo build --bin pan
+      - name: Run the harness
+        working-directory: reachlock
+        run: python3 tests/soul-protocol-harness/run_harness.py --pan-bin ../pan/target/debug/pan
+
   # ─── Wave 1 — CLI agent with real provider (placeholder) ──────────
   wave-1:
     name: Wave 1

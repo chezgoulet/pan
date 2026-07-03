@@ -66,6 +66,18 @@ impl Server {
         Ok(stream)
     }
 
+    /// Drop the retained clone of the just-driven connection. `drive` owns
+    /// one handle and drops it on return, but `accept_one` kept a clone in
+    /// `current` — the OS only closes the TCP connection when *every* handle
+    /// is gone. Without this, a host that sent `shutdown` waits forever for
+    /// the EOF the protocol promises ("`shutdown` | connection close").
+    pub fn close_current(&self) {
+        let mut guard = self.current.lock().expect("current mutex poisoned");
+        if let Some(old) = guard.take() {
+            let _ = old.shutdown(Shutdown::Both);
+        }
+    }
+
     /// Drive one connection to completion. Reads lines, hands them to the
     /// session, writes replies, and exits cleanly on `shutdown` or EOF.
     /// On `SessionError::VersionUnsupported` the error is written and the
@@ -95,7 +107,7 @@ impl Server {
             if line.is_empty() { continue; }
             if line.len() > MAX_LINE_BYTES {
                 // Pathological / hostile. Send a bad_frame and keep going.
-                let out = Envelope::outgoing(0, None, Body::Error(ErrorBody {
+                let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
                     code: crate::wire::ErrorCode::BadFrame,
                     message: format!("line exceeds {MAX_LINE_BYTES} bytes"),
                 }));
@@ -103,13 +115,14 @@ impl Server {
                 continue;
             }
 
-            let env = match Envelope::from_ndjson(&line) {
+            let env = match parse_envelope(&line) {
                 Ok(e) => e,
-                Err(e) => {
-                    // Bad frame: reply with `error: bad_frame` and keep going.
-                    let out = Envelope::outgoing(0, None, Body::Error(ErrorBody {
-                        code: crate::wire::ErrorCode::BadFrame,
-                        message: format!("could not parse NDJSON: {e}"),
+                Err((code, message)) => {
+                    // Rejected line: `bad_frame` (not a valid envelope) or
+                    // `unknown_type` (valid envelope, type outside the closed
+                    // set). Either way the connection stays open.
+                    let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
+                        code, message,
                     }));
                     write_ndjson(&mut writer, &out)?;
                     continue;
@@ -132,7 +145,7 @@ impl Server {
                 }
                 Err(SessionError::VersionUnsupported { client, ours }) => {
                     // Send one final error message, then close.
-                    let out = Envelope::outgoing(0, None, Body::Error(ErrorBody {
+                    let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
                         code: crate::wire::ErrorCode::VersionUnsupported,
                         message: format!(
                             "protocol_version mismatch: client={client}, daemon={ours}"),
@@ -151,6 +164,30 @@ impl Server {
             }
         }
     }
+}
+
+/// Parse one NDJSON line into an envelope, distinguishing the protocol's two
+/// rejection codes: a line that is not valid JSON — or that decodes into no
+/// known envelope/body shape — is `bad_frame`; a structurally sound envelope
+/// whose `type` is a string outside the closed set of 10 is `unknown_type`
+/// (SOUL-PROTOCOL.md: "MUST reject unknown `type` values with an `error`
+/// (code `unknown_type`)"). Serde alone can't make that distinction — an
+/// unrecognized enum variant and a missing field both surface as the same
+/// deserialize error — so we stage the parse: JSON first, then the `type`
+/// discriminator, then the full envelope.
+fn parse_envelope(line: &str) -> Result<Envelope, (crate::wire::ErrorCode, String)> {
+    let value: serde_json::Value = serde_json::from_str(line)
+        .map_err(|e| (crate::wire::ErrorCode::BadFrame, format!("could not parse NDJSON: {e}")))?;
+    if let Some(ty) = value.get("type").and_then(|t| t.as_str()) {
+        if crate::wire::MessageType::from_wire(ty).is_none() {
+            return Err((
+                crate::wire::ErrorCode::UnknownType,
+                format!("unknown message type `{ty}`"),
+            ));
+        }
+    }
+    serde_json::from_value(value)
+        .map_err(|e| (crate::wire::ErrorCode::BadFrame, format!("could not parse NDJSON: {e}")))
 }
 
 /// Helper: serialize the envelope compactly and write it followed by a
@@ -180,6 +217,9 @@ pub fn serve_loopback(port: u16) -> io::Result<()> {
         if let Err(e) = Server::drive(stream) {
             eprintln!("pan serve: connection error: {e}; awaiting next host");
         }
+        // Whatever ended the drive (shutdown, version mismatch, EOF, error),
+        // release the retained clone so the host observes the close.
+        server.close_current();
     }
 }
 
@@ -266,5 +306,106 @@ mod tests {
         writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
         drop(s);
         server_handle.join().unwrap();
+    }
+
+    /// After `shutdown` is acked the host must observe the connection
+    /// CLOSING (EOF), not just silence. Regression test for the retained
+    /// `current` clone keeping the fd open after `drive` returned; the test
+    /// mirrors `serve_loopback`'s accept loop including `close_current`.
+    #[test]
+    fn shutdown_ack_is_followed_by_eof() {
+        let server = Server::bind(("127.0.0.1", 0)).unwrap();
+        let port = server.listener.local_addr().unwrap().port();
+        let server_handle = thread::spawn(move || {
+            let stream = server.accept_one().unwrap();
+            Server::drive(stream).unwrap();
+            server.close_current();
+        });
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let hello = Envelope {
+            v: 0, seq: 0, re: None, ty: MessageType::Hello,
+            body: Body::Hello(HelloBody {
+                protocol_version: PROTOCOL_VERSION,
+                profile: "reachlock/0".into(),
+                client: "test".into(),
+            }),
+        };
+        writeln!(s, "{}", hello.to_ndjson().unwrap()).unwrap();
+        let mut reader = BufReader::new(s.try_clone().unwrap());
+        let mut buf = String::new();
+        reader.read_line(&mut buf).unwrap(); // welcome
+
+        let shutdown = Envelope {
+            v: 0, seq: 1, re: None, ty: MessageType::Shutdown,
+            body: Body::Shutdown(ShutdownBody::default()),
+        };
+        writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
+        buf.clear();
+        reader.read_line(&mut buf).unwrap(); // ack
+        let resp: Envelope = serde_json::from_str(buf.trim()).unwrap();
+        assert_eq!(resp.ty, MessageType::Ack);
+
+        // The next read must be EOF (0 bytes), not a hang — a read timeout
+        // here means the daemon left the connection open after shutdown.
+        buf.clear();
+        let n = reader.read_line(&mut buf)
+            .expect("expected EOF after shutdown ack, got a read error/timeout");
+        assert_eq!(n, 0, "expected EOF after shutdown ack, got: {buf:?}");
+        server_handle.join().unwrap();
+    }
+
+    /// A well-formed envelope whose `type` is outside the closed set yields
+    /// `error: unknown_type` (NOT `bad_frame`), and the connection stays open
+    /// for the next valid frame. This is the protocol's "MUST reject unknown
+    /// `type` values with an `error` (code `unknown_type`)" clause.
+    #[test]
+    fn unknown_type_yields_unknown_type_error_then_continues() {
+        let server = Server::bind(("127.0.0.1", 0)).unwrap();
+        let port = server.listener.local_addr().unwrap().port();
+        let server_handle = thread::spawn(move || {
+            let stream = server.accept_one().unwrap();
+            Server::drive(stream).unwrap();
+        });
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        writeln!(s, r#"{{"v":0,"seq":7,"type":"frobnicate","body":{{}}}}"#).unwrap();
+        let mut buf = String::new();
+        let mut reader = BufReader::new(s.try_clone().unwrap());
+        reader.read_line(&mut buf).unwrap();
+        let resp: Envelope = serde_json::from_str(buf.trim()).unwrap();
+        if let Body::Error(e) = &resp.body {
+            assert_eq!(e.code, crate::wire::ErrorCode::UnknownType);
+            assert!(e.message.contains("frobnicate"),
+                "message should name the unknown type: {}", e.message);
+        } else { panic!("expected error body, got {resp:?}"); }
+
+        // Then a valid shutdown so the server thread exits.
+        let shutdown = Envelope {
+            v: 0, seq: 8, re: None, ty: MessageType::Shutdown,
+            body: Body::Shutdown(ShutdownBody::default()),
+        };
+        writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
+        drop(s);
+        server_handle.join().unwrap();
+    }
+
+    /// `parse_envelope` staging: not-JSON → bad_frame; unknown type →
+    /// unknown_type; a known type with a broken body → bad_frame.
+    #[test]
+    fn parse_envelope_distinguishes_bad_frame_from_unknown_type() {
+        use crate::wire::ErrorCode;
+        let err = parse_envelope("not json").unwrap_err();
+        assert_eq!(err.0, ErrorCode::BadFrame);
+
+        let err = parse_envelope(r#"{"v":0,"seq":1,"type":"frobnicate","body":{}}"#).unwrap_err();
+        assert_eq!(err.0, ErrorCode::UnknownType);
+
+        let err = parse_envelope(r#"{"v":0,"seq":1,"type":"hello","body":{}}"#).unwrap_err();
+        assert_eq!(err.0, ErrorCode::BadFrame, "hello with a missing body shape is a bad frame");
+
+        assert!(parse_envelope(
+            r#"{"v":0,"seq":1,"type":"shutdown","body":{}}"#).is_ok());
     }
 }

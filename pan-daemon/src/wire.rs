@@ -191,6 +191,28 @@ pub enum MessageType {
 }
 
 impl MessageType {
+    /// Inverse of [`MessageType::as_str`]: recognize a wire spelling.
+    /// `None` means the type is outside the protocol's closed set — the
+    /// protocol says the daemon MUST reject it with `error: unknown_type`
+    /// (distinct from `bad_frame`, which is for lines that aren't valid
+    /// envelopes at all). The connection driver uses this to stage the
+    /// parse; see `server::parse_envelope`.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "hello" => Some(MessageType::Hello),
+            "welcome" => Some(MessageType::Welcome),
+            "register_capabilities" => Some(MessageType::RegisterCapabilities),
+            "instantiate_soul" => Some(MessageType::InstantiateSoul),
+            "release_soul" => Some(MessageType::ReleaseSoul),
+            "perceive" => Some(MessageType::Perceive),
+            "decision" => Some(MessageType::Decision),
+            "ack" => Some(MessageType::Ack),
+            "error" => Some(MessageType::Error),
+            "shutdown" => Some(MessageType::Shutdown),
+            _ => None,
+        }
+    }
+
     /// Wire spelling (snake_case) for matching against schema `const` values.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -548,6 +570,24 @@ mod tests {
         assert!(s.contains("\"code\":\"unknown_capability\""));
         let back = Envelope::from_ndjson(&s).unwrap();
         assert_eq!(env, back);
+    }
+
+    /// `from_wire` is the exact inverse of `as_str` over the closed set of
+    /// 10 types, and rejects anything else.
+    #[test]
+    fn message_type_from_wire_inverts_as_str() {
+        let all = [
+            MessageType::Hello, MessageType::Welcome,
+            MessageType::RegisterCapabilities, MessageType::InstantiateSoul,
+            MessageType::ReleaseSoul, MessageType::Perceive,
+            MessageType::Decision, MessageType::Ack,
+            MessageType::Error, MessageType::Shutdown,
+        ];
+        for ty in all {
+            assert_eq!(MessageType::from_wire(ty.as_str()), Some(ty));
+        }
+        assert_eq!(MessageType::from_wire("frobnicate"), None);
+        assert_eq!(MessageType::from_wire("Hello"), None, "wire spelling is snake_case only");
     }
 
     /// `re` is optional — its absence must serialize as the field being

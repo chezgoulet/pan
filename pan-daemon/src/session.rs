@@ -226,6 +226,15 @@ impl Session {
         s
     }
 
+    /// Allocate an outgoing `seq` for a message written *outside* the
+    /// session's own handlers — the connection driver's parse-reject replies
+    /// (`bad_frame`, `unknown_type`) and the handshake-failure `error`. The
+    /// envelope contract says `seq` is sender-local and monotonically
+    /// increasing; every daemon-to-host line must draw from the one counter.
+    pub fn alloc_seq(&mut self) -> u64 {
+        self.next_seq()
+    }
+
     /// Build an outgoing envelope with the session's `seq`. The session
     /// always sets `re` to the inbound `seq` for response messages.
     fn out(&mut self, re: Option<u64>, body: Body) -> Envelope {
