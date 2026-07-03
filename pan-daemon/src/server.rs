@@ -47,7 +47,10 @@ impl Server {
     /// hard-coded `127.0.0.1`.
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
-        Ok(Server { listener, current: Mutex::new(None) })
+        Ok(Server {
+            listener,
+            current: Mutex::new(None),
+        })
     }
 
     /// Accept one connection; the function blocks until a host connects.
@@ -100,17 +103,29 @@ impl Server {
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
                 Err(e) => return Err(e),
             };
-            if n == 0 { return Ok(()); }
+            if n == 0 {
+                return Ok(());
+            }
             // Strip the trailing newline (BufReader::read_line keeps it).
-            if line.ends_with('\n') { line.pop(); }
-            if line.ends_with('\r') { line.pop(); }
-            if line.is_empty() { continue; }
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            if line.is_empty() {
+                continue;
+            }
             if line.len() > MAX_LINE_BYTES {
                 // Pathological / hostile. Send a bad_frame and keep going.
-                let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
-                    code: crate::wire::ErrorCode::BadFrame,
-                    message: format!("line exceeds {MAX_LINE_BYTES} bytes"),
-                }));
+                let out = Envelope::outgoing(
+                    session.alloc_seq(),
+                    None,
+                    Body::Error(ErrorBody {
+                        code: crate::wire::ErrorCode::BadFrame,
+                        message: format!("line exceeds {MAX_LINE_BYTES} bytes"),
+                    }),
+                );
                 write_ndjson(&mut writer, &out)?;
                 continue;
             }
@@ -121,9 +136,11 @@ impl Server {
                     // Rejected line: `bad_frame` (not a valid envelope) or
                     // `unknown_type` (valid envelope, type outside the closed
                     // set). Either way the connection stays open.
-                    let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
-                        code, message,
-                    }));
+                    let out = Envelope::outgoing(
+                        session.alloc_seq(),
+                        None,
+                        Body::Error(ErrorBody { code, message }),
+                    );
                     write_ndjson(&mut writer, &out)?;
                     continue;
                 }
@@ -145,11 +162,16 @@ impl Server {
                 }
                 Err(SessionError::VersionUnsupported { client, ours }) => {
                     // Send one final error message, then close.
-                    let out = Envelope::outgoing(session.alloc_seq(), None, Body::Error(ErrorBody {
-                        code: crate::wire::ErrorCode::VersionUnsupported,
-                        message: format!(
-                            "protocol_version mismatch: client={client}, daemon={ours}"),
-                    }));
+                    let out = Envelope::outgoing(
+                        session.alloc_seq(),
+                        None,
+                        Body::Error(ErrorBody {
+                            code: crate::wire::ErrorCode::VersionUnsupported,
+                            message: format!(
+                                "protocol_version mismatch: client={client}, daemon={ours}"
+                            ),
+                        }),
+                    );
                     let _ = write_ndjson(&mut writer, &out);
                     return Ok(());
                 }
@@ -176,8 +198,12 @@ impl Server {
 /// deserialize error — so we stage the parse: JSON first, then the `type`
 /// discriminator, then the full envelope.
 fn parse_envelope(line: &str) -> Result<Envelope, (crate::wire::ErrorCode, String)> {
-    let value: serde_json::Value = serde_json::from_str(line)
-        .map_err(|e| (crate::wire::ErrorCode::BadFrame, format!("could not parse NDJSON: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+        (
+            crate::wire::ErrorCode::BadFrame,
+            format!("could not parse NDJSON: {e}"),
+        )
+    })?;
     if let Some(ty) = value.get("type").and_then(|t| t.as_str()) {
         if crate::wire::MessageType::from_wire(ty).is_none() {
             return Err((
@@ -186,15 +212,20 @@ fn parse_envelope(line: &str) -> Result<Envelope, (crate::wire::ErrorCode, Strin
             ));
         }
     }
-    serde_json::from_value(value)
-        .map_err(|e| (crate::wire::ErrorCode::BadFrame, format!("could not parse NDJSON: {e}")))
+    serde_json::from_value(value).map_err(|e| {
+        (
+            crate::wire::ErrorCode::BadFrame,
+            format!("could not parse NDJSON: {e}"),
+        )
+    })
 }
 
 /// Helper: serialize the envelope compactly and write it followed by a
 /// newline. Flushes after every line so the host sees the response
 /// immediately.
 fn write_ndjson(w: &mut TcpStream, env: &Envelope) -> io::Result<()> {
-    let s = env.to_ndjson()
+    let s = env
+        .to_ndjson()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     w.write_all(s.as_bytes())?;
     w.write_all(b"\n")?;
@@ -226,7 +257,9 @@ pub fn serve_loopback(port: u16) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{Body, Envelope, HelloBody, MessageType, ShutdownBody, PROTOCOL_VERSION, SERVER_IDENTITY};
+    use crate::wire::{
+        Body, Envelope, HelloBody, MessageType, ShutdownBody, PROTOCOL_VERSION, SERVER_IDENTITY,
+    };
     use std::io::{BufReader, Write};
     use std::net::TcpStream;
     use std::thread;
@@ -247,7 +280,10 @@ mod tests {
 
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let hello = Envelope {
-            v: 0, seq: 0, re: None, ty: MessageType::Hello,
+            v: 0,
+            seq: 0,
+            re: None,
+            ty: MessageType::Hello,
             body: Body::Hello(HelloBody {
                 protocol_version: PROTOCOL_VERSION,
                 profile: "reachlock/0".into(),
@@ -264,11 +300,16 @@ mod tests {
         if let Body::Welcome(w) = &resp.body {
             assert_eq!(w.protocol_version, 0);
             assert_eq!(w.server, SERVER_IDENTITY);
-        } else { panic!("expected welcome body, got {resp:?}"); }
+        } else {
+            panic!("expected welcome body, got {resp:?}");
+        }
 
         // Send a shutdown so the server thread exits.
         let shutdown = Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::Shutdown,
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::Shutdown,
             body: Body::Shutdown(ShutdownBody::default()),
         };
         writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
@@ -296,11 +337,16 @@ mod tests {
         let resp: Envelope = serde_json::from_str(buf.trim()).unwrap();
         if let Body::Error(e) = &resp.body {
             assert_eq!(e.code, crate::wire::ErrorCode::BadFrame);
-        } else { panic!("expected error body, got {resp:?}"); }
+        } else {
+            panic!("expected error body, got {resp:?}");
+        }
 
         // Then a valid shutdown so the server thread exits.
         let shutdown = Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::Shutdown,
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::Shutdown,
             body: Body::Shutdown(ShutdownBody::default()),
         };
         writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
@@ -323,9 +369,13 @@ mod tests {
         });
 
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         let hello = Envelope {
-            v: 0, seq: 0, re: None, ty: MessageType::Hello,
+            v: 0,
+            seq: 0,
+            re: None,
+            ty: MessageType::Hello,
             body: Body::Hello(HelloBody {
                 protocol_version: PROTOCOL_VERSION,
                 profile: "reachlock/0".into(),
@@ -338,7 +388,10 @@ mod tests {
         reader.read_line(&mut buf).unwrap(); // welcome
 
         let shutdown = Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::Shutdown,
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::Shutdown,
             body: Body::Shutdown(ShutdownBody::default()),
         };
         writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
@@ -350,7 +403,8 @@ mod tests {
         // The next read must be EOF (0 bytes), not a hang — a read timeout
         // here means the daemon left the connection open after shutdown.
         buf.clear();
-        let n = reader.read_line(&mut buf)
+        let n = reader
+            .read_line(&mut buf)
             .expect("expected EOF after shutdown ack, got a read error/timeout");
         assert_eq!(n, 0, "expected EOF after shutdown ack, got: {buf:?}");
         server_handle.join().unwrap();
@@ -377,13 +431,21 @@ mod tests {
         let resp: Envelope = serde_json::from_str(buf.trim()).unwrap();
         if let Body::Error(e) = &resp.body {
             assert_eq!(e.code, crate::wire::ErrorCode::UnknownType);
-            assert!(e.message.contains("frobnicate"),
-                "message should name the unknown type: {}", e.message);
-        } else { panic!("expected error body, got {resp:?}"); }
+            assert!(
+                e.message.contains("frobnicate"),
+                "message should name the unknown type: {}",
+                e.message
+            );
+        } else {
+            panic!("expected error body, got {resp:?}");
+        }
 
         // Then a valid shutdown so the server thread exits.
         let shutdown = Envelope {
-            v: 0, seq: 8, re: None, ty: MessageType::Shutdown,
+            v: 0,
+            seq: 8,
+            re: None,
+            ty: MessageType::Shutdown,
             body: Body::Shutdown(ShutdownBody::default()),
         };
         writeln!(s, "{}", shutdown.to_ndjson().unwrap()).unwrap();
@@ -403,9 +465,12 @@ mod tests {
         assert_eq!(err.0, ErrorCode::UnknownType);
 
         let err = parse_envelope(r#"{"v":0,"seq":1,"type":"hello","body":{}}"#).unwrap_err();
-        assert_eq!(err.0, ErrorCode::BadFrame, "hello with a missing body shape is a bad frame");
+        assert_eq!(
+            err.0,
+            ErrorCode::BadFrame,
+            "hello with a missing body shape is a bad frame"
+        );
 
-        assert!(parse_envelope(
-            r#"{"v":0,"seq":1,"type":"shutdown","body":{}}"#).is_ok());
+        assert!(parse_envelope(r#"{"v":0,"seq":1,"type":"shutdown","body":{}}"#).is_ok());
     }
 }

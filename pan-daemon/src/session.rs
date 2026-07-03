@@ -38,15 +38,13 @@ use std::collections::HashMap;
 use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline, PipelineError};
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::registry::CapabilityRegistry;
-use pan_core::schema::{
-    self as v, ActionIntent, Capability, Context, Decision, Goal, Provider,
-};
+use pan_core::schema::{self as v, ActionIntent, Capability, Context, Decision, Goal, Provider};
 
 use crate::governor::ResolveGovernor;
 use crate::wire::{
-    AckBody, Body, DecisionBody, Envelope, ErrorBody, HelloBody, InstantiateSoulBody,
-    MessageType, MindKind, PerceiveBody, PROTOCOL_VERSION, RegisterCapabilitiesBody,
-    SERVER_IDENTITY, WelcomeBody,
+    AckBody, Body, DecisionBody, Envelope, ErrorBody, HelloBody, InstantiateSoulBody, MessageType,
+    MindKind, PerceiveBody, RegisterCapabilitiesBody, WelcomeBody, PROTOCOL_VERSION,
+    SERVER_IDENTITY,
 };
 
 /// The "minds" this daemon advertises in `welcome.minds`: rules always; llm
@@ -81,7 +79,11 @@ impl SoulState {
         } else {
             Vec::new()
         };
-        SoulState { mind: body.mind, soul: body.soul.clone(), rules }
+        SoulState {
+            mind: body.mind,
+            soul: body.soul.clone(),
+            rules,
+        }
     }
 
     /// Build this soul's mind. Rules and llm are live; a mind the daemon
@@ -90,9 +92,13 @@ impl SoulState {
     /// the host always gets a well-formed reply.
     fn provider(&self) -> Box<dyn Provider> {
         match self.mind {
-            MindKind::Rules => Box::new(RulesProvider { rules: self.rules.clone() }),
+            MindKind::Rules => Box::new(RulesProvider {
+                rules: self.rules.clone(),
+            }),
             MindKind::Llm => match crate::llm::resolve() {
-                Some(config) => Box::new(crate::llm::LlmProvider { config: config.clone() }),
+                Some(config) => Box::new(crate::llm::LlmProvider {
+                    config: config.clone(),
+                }),
                 None => Box::new(NoProvider),
             },
             _ => Box::new(NoProvider),
@@ -120,7 +126,8 @@ fn parse_rules_from_soul(soul: &serde_json::Value) -> Vec<Rule> {
     };
     let mut out = Vec::new();
     for entry in arr {
-        let when_event_topic = entry.get("when_event_topic")
+        let when_event_topic = entry
+            .get("when_event_topic")
             .and_then(|t| t.as_str())
             .map(|s| s.to_string());
         let when_signal_over = entry.get("when_signal_over").and_then(|s| {
@@ -168,17 +175,22 @@ pub enum SessionError {
 /// intents the provider emitted) or the FIRST failure (Failed, carrying the
 /// wire error code + a human message).
 enum DispatchOutcome {
-    Ok { intents: Vec<ActionIntent> },
-    Failed { code: crate::wire::ErrorCode, message: String },
+    Ok {
+        intents: Vec<ActionIntent>,
+    },
+    Failed {
+        code: crate::wire::ErrorCode,
+        message: String,
+    },
 }
 
 /// Map a pipeline-level error to the wire's closed-set `ErrorCode`.
 fn pipeline_err_to_wire(e: &PipelineError) -> crate::wire::ErrorCode {
     match e {
         PipelineError::Unresolved { .. } => crate::wire::ErrorCode::UnknownCapability,
-        PipelineError::Invalid { .. }    => crate::wire::ErrorCode::InvalidArgs,
-        PipelineError::Rejected(_)       => crate::wire::ErrorCode::ProviderFailure,
-        PipelineError::Execution { .. }  => crate::wire::ErrorCode::ProviderFailure,
+        PipelineError::Invalid { .. } => crate::wire::ErrorCode::InvalidArgs,
+        PipelineError::Rejected(_) => crate::wire::ErrorCode::ProviderFailure,
+        PipelineError::Execution { .. } => crate::wire::ErrorCode::ProviderFailure,
     }
 }
 
@@ -186,14 +198,18 @@ fn pipeline_err_to_wire(e: &PipelineError) -> crate::wire::ErrorCode {
 /// where relevant so a host log can identify the failing call.
 fn pipeline_err_message(e: &PipelineError) -> String {
     match e {
-        PipelineError::Unresolved { capability } =>
-            format!("provider requested `{capability}` which was never registered"),
-        PipelineError::Invalid { capability, reason } =>
-            format!("invalid args for `{capability}`: {reason}"),
-        PipelineError::Rejected(r) =>
-            format!("governor rejected `{}`: {:?}", r.capability, r.verdict),
-        PipelineError::Execution { capability, reason } =>
-            format!("executor failed for `{capability}`: {reason}"),
+        PipelineError::Unresolved { capability } => {
+            format!("provider requested `{capability}` which was never registered")
+        }
+        PipelineError::Invalid { capability, reason } => {
+            format!("invalid args for `{capability}`: {reason}")
+        }
+        PipelineError::Rejected(r) => {
+            format!("governor rejected `{}`: {:?}", r.capability, r.verdict)
+        }
+        PipelineError::Execution { capability, reason } => {
+            format!("executor failed for `{capability}`: {reason}")
+        }
     }
 }
 
@@ -254,7 +270,11 @@ impl Session {
             MessageType::Hello => self.on_hello(env.seq, env.body),
             MessageType::Welcome => {
                 // Daemon does not receive `welcome`; it's daemon → host only.
-                self.error_response(env.seq, crate::wire::ErrorCode::UnknownType, "welcome is daemon-to-host only")
+                self.error_response(
+                    env.seq,
+                    crate::wire::ErrorCode::UnknownType,
+                    "welcome is daemon-to-host only",
+                )
             }
             MessageType::RegisterCapabilities => self.on_register(env.seq, env.body),
             MessageType::InstantiateSoul => self.on_instantiate(env.seq, env.body),
@@ -262,14 +282,22 @@ impl Session {
             MessageType::Perceive => self.on_perceive(env.seq, env.body),
             MessageType::Decision | MessageType::Ack => {
                 // Daemon does not receive these; host → daemon only.
-                self.error_response(env.seq, crate::wire::ErrorCode::UnknownType, "decision/ack is daemon-to-host only")
+                self.error_response(
+                    env.seq,
+                    crate::wire::ErrorCode::UnknownType,
+                    "decision/ack is daemon-to-host only",
+                )
             }
             MessageType::Error => {
                 // Daemon does not receive `error`; it's daemon → host only.
                 // We still record the inbound `error` so a future observability
                 // layer can audit it; for M1 we reply with another `error`
                 // indicating the misuse.
-                self.error_response(env.seq, crate::wire::ErrorCode::UnknownType, "error is daemon-to-host only")
+                self.error_response(
+                    env.seq,
+                    crate::wire::ErrorCode::UnknownType,
+                    "error is daemon-to-host only",
+                )
             }
             MessageType::Shutdown => self.on_shutdown(env.seq, env.body),
         }
@@ -277,19 +305,34 @@ impl Session {
 
     /// Adapter: turn a "no such wire type inbound here" into a proper
     /// `error: unknown_type` wire message.
-    fn error_response(&mut self, re: u64, code: crate::wire::ErrorCode, message: &str) -> Result<Vec<Envelope>, SessionError> {
-        Ok(vec![self.out(Some(re), Body::Error(ErrorBody {
-            code, message: message.to_string(),
-        }))])
+    fn error_response(
+        &mut self,
+        re: u64,
+        code: crate::wire::ErrorCode,
+        message: &str,
+    ) -> Result<Vec<Envelope>, SessionError> {
+        Ok(vec![self.out(
+            Some(re),
+            Body::Error(ErrorBody {
+                code,
+                message: message.to_string(),
+            }),
+        )])
     }
 
     fn on_hello(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
-        let Body::Hello(HelloBody { protocol_version, profile, client: _ }) = body else {
+        let Body::Hello(HelloBody {
+            protocol_version,
+            profile,
+            client: _,
+        }) = body
+        else {
             return self.error_response(re, crate::wire::ErrorCode::BadFrame, "hello body shape");
         };
         if protocol_version != PROTOCOL_VERSION || profile != "reachlock/0" {
             return Err(SessionError::VersionUnsupported {
-                client: protocol_version, ours: PROTOCOL_VERSION,
+                client: protocol_version,
+                ours: PROTOCOL_VERSION,
             });
         }
         let welcome = WelcomeBody {
@@ -302,7 +345,11 @@ impl Session {
 
     fn on_register(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
         let Body::RegisterCapabilities(RegisterCapabilitiesBody { capabilities }) = body else {
-            return self.error_response(re, crate::wire::ErrorCode::BadFrame, "register_capabilities body shape");
+            return self.error_response(
+                re,
+                crate::wire::ErrorCode::BadFrame,
+                "register_capabilities body shape",
+            );
         };
         // Replace the registry. A duplicate id within the host's set is a host
         // bug — return an error rather than silently overwriting, matching the
@@ -310,10 +357,13 @@ impl Session {
         let mut new_reg = CapabilityRegistry::new();
         for c in capabilities {
             if let Err(e) = new_reg.register(c) {
-                return Ok(vec![self.out(Some(re), Body::Error(ErrorBody {
-                    code: crate::wire::ErrorCode::ProviderFailure,
-                    message: format!("register_capabilities: {e}"),
-                }))]);
+                return Ok(vec![self.out(
+                    Some(re),
+                    Body::Error(ErrorBody {
+                        code: crate::wire::ErrorCode::ProviderFailure,
+                        message: format!("register_capabilities: {e}"),
+                    }),
+                )]);
             }
         }
         self.registry = new_reg;
@@ -322,39 +372,63 @@ impl Session {
 
     fn on_instantiate(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
         let Body::InstantiateSoul(b) = body else {
-            return self.error_response(re, crate::wire::ErrorCode::BadFrame, "instantiate_soul body shape");
+            return self.error_response(
+                re,
+                crate::wire::ErrorCode::BadFrame,
+                "instantiate_soul body shape",
+            );
         };
         // For M1, only `rules` is fully exercised; the others are accepted but
         // their provider is `None` (the session emits a Continue-only decision
         // on perceive). The host is told via welcome.minds, so this is not
         // surprising.
-        self.souls.insert(b.soul_id.clone(), SoulState::from_body(&b));
+        self.souls
+            .insert(b.soul_id.clone(), SoulState::from_body(&b));
         Ok(vec![self.out(Some(re), Body::Ack(AckBody::default()))])
     }
 
     fn on_release(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
         let Body::ReleaseSoul(b) = body else {
-            return self.error_response(re, crate::wire::ErrorCode::BadFrame, "release_soul body shape");
+            return self.error_response(
+                re,
+                crate::wire::ErrorCode::BadFrame,
+                "release_soul body shape",
+            );
         };
         if self.souls.remove(&b.soul_id).is_none() {
-            return Ok(vec![self.out(Some(re), Body::Error(ErrorBody {
-                code: crate::wire::ErrorCode::UnknownSoul,
-                message: format!("soul_id `{}` is not instantiated", b.soul_id),
-            }))]);
+            return Ok(vec![self.out(
+                Some(re),
+                Body::Error(ErrorBody {
+                    code: crate::wire::ErrorCode::UnknownSoul,
+                    message: format!("soul_id `{}` is not instantiated", b.soul_id),
+                }),
+            )]);
         }
         Ok(vec![self.out(Some(re), Body::Ack(AckBody::default()))])
     }
 
     fn on_perceive(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
-        let Body::Perceive(PerceiveBody { soul_id, goal, context }) = body else {
-            return self.error_response(re, crate::wire::ErrorCode::BadFrame, "perceive body shape");
+        let Body::Perceive(PerceiveBody {
+            soul_id,
+            goal,
+            context,
+        }) = body
+        else {
+            return self.error_response(
+                re,
+                crate::wire::ErrorCode::BadFrame,
+                "perceive body shape",
+            );
         };
         // First, look up the soul. Unknown → error.
         let Some(soul) = self.souls.get(&soul_id) else {
-            return Ok(vec![self.out(Some(re), Body::Error(ErrorBody {
-                code: crate::wire::ErrorCode::UnknownSoul,
-                message: format!("soul_id `{soul_id}` is not instantiated"),
-            }))]);
+            return Ok(vec![self.out(
+                Some(re),
+                Body::Error(ErrorBody {
+                    code: crate::wire::ErrorCode::UnknownSoul,
+                    message: format!("soul_id `{soul_id}` is not instantiated"),
+                }),
+            )]);
         };
 
         // Ask the soul's mind for a decision. Minds the daemon can't host
@@ -382,7 +456,9 @@ impl Session {
         // Reference ResolveGovernor to confirm it compiles and is part of the
         // daemon's M1 vocabulary. The wire-level check below uses the
         // pipeline's own resolve stage, which is the structural choke point.
-        let _g = ResolveGovernor { registry: &self.registry };
+        let _g = ResolveGovernor {
+            registry: &self.registry,
+        };
         let _ = _g;
         let outcome = self.dispatch_decision(&decision, &pipeline);
         // Shut the stream down so the consumer thread exits; events were
@@ -406,9 +482,9 @@ impl Session {
                 // daemon's validate stage replies with `error code:
                 // unknown_capability` etc. on a failed Invoke. The host
                 // correlates by `re`.
-                Ok(vec![self.out(Some(re), Body::Error(ErrorBody {
-                    code, message,
-                }))])
+                Ok(vec![
+                    self.out(Some(re), Body::Error(ErrorBody { code, message }))
+                ])
             }
         }
     }
@@ -431,7 +507,11 @@ impl Session {
         let mut out = Vec::new();
         for intent in &decision.intents {
             match intent {
-                ActionIntent::Invoke { capability, args, correlation } => {
+                ActionIntent::Invoke {
+                    capability,
+                    args,
+                    correlation,
+                } => {
                     let req = pan_core::pipeline::EffectRequest {
                         capability: capability.clone(),
                         args: args.clone(),
@@ -452,8 +532,13 @@ impl Session {
         // If the original decision had no Conclude, append a Continue so the
         // wire's decision body is well-formed (the host's loop reads
         // `decision.outcome()`).
-        if !out.iter().any(|i| matches!(i, ActionIntent::Conclude { .. })) {
-            out.push(ActionIntent::Conclude { outcome: v::Outcome::Continue });
+        if !out
+            .iter()
+            .any(|i| matches!(i, ActionIntent::Conclude { .. }))
+        {
+            out.push(ActionIntent::Conclude {
+                outcome: v::Outcome::Continue,
+            });
         }
         DispatchOutcome::Ok { intents: out }
     }
@@ -470,9 +555,15 @@ impl Session {
 /// decision so the host gets a well-formed `decision` reply.
 struct NoProvider;
 impl Provider for NoProvider {
-    fn id(&self) -> &str { "provider.none" }
+    fn id(&self) -> &str {
+        "provider.none"
+    }
     fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
-        Decision { intents: vec![ActionIntent::Conclude { outcome: v::Outcome::Continue }] }
+        Decision {
+            intents: vec![ActionIntent::Conclude {
+                outcome: v::Outcome::Continue,
+            }],
+        }
     }
 }
 
@@ -480,14 +571,17 @@ impl Provider for NoProvider {
 mod tests {
     use super::*;
     use crate::wire::{
-        Body, Envelope, HelloBody, InstantiateSoulBody, MessageType, MindKind,
-        PerceiveBody, RegisterCapabilitiesBody,
+        Body, Envelope, HelloBody, InstantiateSoulBody, MessageType, MindKind, PerceiveBody,
+        RegisterCapabilitiesBody,
     };
     use pan_core::schema as v;
 
     fn hello_envelope(seq: u64) -> Envelope {
         Envelope {
-            v: 0, seq, re: None, ty: MessageType::Hello,
+            v: 0,
+            seq,
+            re: None,
+            ty: MessageType::Hello,
             body: Body::Hello(HelloBody {
                 protocol_version: 0,
                 profile: "reachlock/0".into(),
@@ -508,14 +602,19 @@ mod tests {
             assert_eq!(w.protocol_version, 0);
             assert_eq!(w.server, "pan-serve/0.1.0");
             assert_eq!(w.minds, vec![MindKind::Rules]);
-        } else { panic!("expected welcome body"); }
+        } else {
+            panic!("expected welcome body");
+        }
     }
 
     #[test]
     fn version_mismatch_closes() {
         let mut s = Session::new();
         let env = Envelope {
-            v: 0, seq: 0, re: None, ty: MessageType::Hello,
+            v: 0,
+            seq: 0,
+            re: None,
+            ty: MessageType::Hello,
             body: Body::Hello(HelloBody {
                 protocol_version: 1, // wrong
                 profile: "reachlock/0".into(),
@@ -533,7 +632,10 @@ mod tests {
         s.handle(hello_envelope(0)).unwrap();
         // register capabilities (npc.move_to)
         let reg = Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::RegisterCapabilities,
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::RegisterCapabilities,
             body: Body::RegisterCapabilities(RegisterCapabilitiesBody {
                 capabilities: vec![Capability {
                     id: "npc.move_to".into(),
@@ -547,7 +649,10 @@ mod tests {
 
         // instantiate a rules soul with one event rule
         let inst = Envelope {
-            v: 0, seq: 2, re: None, ty: MessageType::InstantiateSoul,
+            v: 0,
+            seq: 2,
+            re: None,
+            ty: MessageType::InstantiateSoul,
             body: Body::InstantiateSoul(InstantiateSoulBody {
                 soul_id: "example_pilot".into(),
                 mind: MindKind::Rules,
@@ -564,11 +669,15 @@ mod tests {
 
         // perceive with the matching event topic
         let perc = Envelope {
-            v: 0, seq: 3, re: None, ty: MessageType::Perceive,
+            v: 0,
+            seq: 3,
+            re: None,
+            ty: MessageType::Perceive,
             body: Body::Perceive(PerceiveBody {
                 soul_id: "example_pilot".into(),
                 goal: Goal {
-                    id: "amb_00007".into(), revision: 1,
+                    id: "amb_00007".into(),
+                    revision: 1,
                     objective: "react".into(),
                     trigger: v::Trigger::Event {
                         topic: "combat.crew_saved".into(),
@@ -585,17 +694,23 @@ mod tests {
         if let Body::Decision(d) = &env.body {
             // The first intent should be the Invoke fired by the rule.
             match &d.decision.intents[0] {
-                ActionIntent::Invoke { capability, args, .. } => {
+                ActionIntent::Invoke {
+                    capability, args, ..
+                } => {
                     assert_eq!(capability, "npc.move_to");
                     assert_eq!(args, &serde_json::json!({"room": "cockpit"}));
                 }
                 other => panic!("expected Invoke, got {other:?}"),
             }
             // A Conclude is appended.
-            assert!(d.decision.intents.iter().any(|i| matches!(
-                i, ActionIntent::Conclude { .. }
-            )));
-        } else { panic!("expected Decision body"); }
+            assert!(d
+                .decision
+                .intents
+                .iter()
+                .any(|i| matches!(i, ActionIntent::Conclude { .. })));
+        } else {
+            panic!("expected Decision body");
+        }
     }
 
     /// The unknown-capability path (conformance case 09): when the provider
@@ -610,7 +725,10 @@ mod tests {
         s.handle(hello_envelope(0)).unwrap();
         // Register only npc.move_to; the rule below tries npc.fly_ship.
         s.handle(Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::RegisterCapabilities,
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::RegisterCapabilities,
             body: Body::RegisterCapabilities(RegisterCapabilitiesBody {
                 capabilities: vec![Capability {
                     id: "npc.move_to".into(),
@@ -618,9 +736,13 @@ mod tests {
                     args_schema: serde_json::json!({"type":"object"}),
                 }],
             }),
-        }).unwrap();
+        })
+        .unwrap();
         s.handle(Envelope {
-            v: 0, seq: 2, re: None, ty: MessageType::InstantiateSoul,
+            v: 0,
+            seq: 2,
+            re: None,
+            ty: MessageType::InstantiateSoul,
             body: Body::InstantiateSoul(InstantiateSoulBody {
                 soul_id: "example_pilot".into(),
                 mind: MindKind::Rules,
@@ -631,26 +753,44 @@ mod tests {
                     ]
                 }),
             }),
-        }).unwrap();
-        let out = s.handle(Envelope {
-            v: 0, seq: 3, re: None, ty: MessageType::Perceive,
-            body: Body::Perceive(PerceiveBody {
-                soul_id: "example_pilot".into(),
-                goal: Goal {
-                    id: "g".into(), revision: 1, objective: "x".into(),
-                    trigger: v::Trigger::Event { topic: "test".into(), payload: serde_json::json!({}) },
-                },
-                context: v::Context::default(),
-            }),
-        }).unwrap();
+        })
+        .unwrap();
+        let out = s
+            .handle(Envelope {
+                v: 0,
+                seq: 3,
+                re: None,
+                ty: MessageType::Perceive,
+                body: Body::Perceive(PerceiveBody {
+                    soul_id: "example_pilot".into(),
+                    goal: Goal {
+                        id: "g".into(),
+                        revision: 1,
+                        objective: "x".into(),
+                        trigger: v::Trigger::Event {
+                            topic: "test".into(),
+                            payload: serde_json::json!({}),
+                        },
+                    },
+                    context: v::Context::default(),
+                }),
+            })
+            .unwrap();
         let env = &out[0];
         assert_eq!(env.re, Some(3), "error must echo the perceive seq as re");
         match &env.body {
             Body::Error(e) => {
-                assert_eq!(e.code, crate::wire::ErrorCode::UnknownCapability,
-                    "expected code=unknown_capability, got {:?}", e.code);
-                assert!(e.message.contains("npc.fly_ship"),
-                    "message should name the unknown capability: {}", e.message);
+                assert_eq!(
+                    e.code,
+                    crate::wire::ErrorCode::UnknownCapability,
+                    "expected code=unknown_capability, got {:?}",
+                    e.code
+                );
+                assert!(
+                    e.message.contains("npc.fly_ship"),
+                    "message should name the unknown capability: {}",
+                    e.message
+                );
             }
             other => panic!("expected wire error body, got {other:?}"),
         }
@@ -660,31 +800,45 @@ mod tests {
     fn unknown_soul_emits_error_response() {
         let mut s = Session::new();
         s.handle(hello_envelope(0)).unwrap();
-        let out = s.handle(Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::Perceive,
-            body: Body::Perceive(PerceiveBody {
-                soul_id: "no_such_soul".into(),
-                goal: Goal {
-                    id: "g".into(), revision: 1, objective: "x".into(),
-                    trigger: v::Trigger::Tick { sequence: 1 },
-                },
-                context: v::Context::default(),
-            }),
-        }).unwrap();
+        let out = s
+            .handle(Envelope {
+                v: 0,
+                seq: 1,
+                re: None,
+                ty: MessageType::Perceive,
+                body: Body::Perceive(PerceiveBody {
+                    soul_id: "no_such_soul".into(),
+                    goal: Goal {
+                        id: "g".into(),
+                        revision: 1,
+                        objective: "x".into(),
+                        trigger: v::Trigger::Tick { sequence: 1 },
+                    },
+                    context: v::Context::default(),
+                }),
+            })
+            .unwrap();
         assert_eq!(out[0].ty, MessageType::Error);
         if let Body::Error(e) = &out[0].body {
             assert_eq!(e.code, crate::wire::ErrorCode::UnknownSoul);
-        } else { panic!("expected error body"); }
+        } else {
+            panic!("expected error body");
+        }
     }
 
     #[test]
     fn shutdown_emits_ack() {
         let mut s = Session::new();
         s.handle(hello_envelope(0)).unwrap();
-        let out = s.handle(Envelope {
-            v: 0, seq: 1, re: None, ty: MessageType::Shutdown,
-            body: crate::wire::Body::Shutdown(crate::wire::ShutdownBody::default()),
-        }).unwrap();
+        let out = s
+            .handle(Envelope {
+                v: 0,
+                seq: 1,
+                re: None,
+                ty: MessageType::Shutdown,
+                body: crate::wire::Body::Shutdown(crate::wire::ShutdownBody::default()),
+            })
+            .unwrap();
         assert_eq!(out[0].ty, MessageType::Ack);
     }
 
@@ -703,6 +857,9 @@ mod tests {
         assert_eq!(rules[0].when_event_topic.as_deref(), Some("a.b"));
         assert!(rules[0].when_signal_over.is_none());
         assert!(rules[1].when_event_topic.is_none());
-        assert_eq!(rules[1].when_signal_over.as_ref().map(|(n, _)| n.as_str()), Some("hull"));
+        assert_eq!(
+            rules[1].when_signal_over.as_ref().map(|(n, _)| n.as_str()),
+            Some("hull")
+        );
     }
 }

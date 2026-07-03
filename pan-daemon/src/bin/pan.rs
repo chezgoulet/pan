@@ -64,16 +64,25 @@ fn run_serve(args: &[String]) -> ExitCode {
             i += 1;
             let v = match args.get(i) {
                 Some(s) => s,
-                None => { eprintln!("--port requires a value"); return ExitCode::from(2); }
+                None => {
+                    eprintln!("--port requires a value");
+                    return ExitCode::from(2);
+                }
             };
             port = Some(match v.parse::<u16>() {
                 Ok(p) => p,
-                Err(e) => { eprintln!("invalid --port: {e}"); return ExitCode::from(2); }
+                Err(e) => {
+                    eprintln!("invalid --port: {e}");
+                    return ExitCode::from(2);
+                }
             });
         } else if let Some(rest) = a.strip_prefix("--port=") {
             port = Some(match rest.parse::<u16>() {
                 Ok(p) => p,
-                Err(e) => { eprintln!("invalid --port: {e}"); return ExitCode::from(2); }
+                Err(e) => {
+                    eprintln!("invalid --port: {e}");
+                    return ExitCode::from(2);
+                }
             });
         } else {
             eprintln!("unknown argument: {a}");
@@ -83,7 +92,11 @@ fn run_serve(args: &[String]) -> ExitCode {
     }
     // Resolution order: --port, then $REACHLOCK_PAN_PORT, then DEFAULT_PORT.
     let port = port
-        .or_else(|| std::env::var("REACHLOCK_PAN_PORT").ok().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            std::env::var("REACHLOCK_PAN_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(DEFAULT_PORT);
 
     eprintln!("pan serve: binding 127.0.0.1:{port}");
@@ -104,15 +117,22 @@ fn run_check_conformance() -> ExitCode {
     eprintln!("checking conformance against {}", dir.display());
     let report = match check_fixtures(&dir) {
         Ok(r) => r,
-        Err(e) => { eprintln!("error: {e}"); return ExitCode::from(1); }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
     };
     if report.is_ok() {
-        println!("ok   {} fixture(s), all {} message types covered",
-            report.fixture_count, report.type_count);
+        println!(
+            "ok   {} fixture(s), all {} message types covered",
+            report.fixture_count, report.type_count
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!("FAILED ({} problem(s)):", report.errors.len());
-        for e in &report.errors { eprintln!("  - {e}"); }
+        for e in &report.errors {
+            eprintln!("  - {e}");
+        }
         ExitCode::from(1)
     }
 }
@@ -130,7 +150,9 @@ fn fixtures_dir() -> PathBuf {
         let mut p = exe.as_path();
         loop {
             let candidate = p.join("pan-daemon/tests/fixtures");
-            if candidate.is_dir() { return candidate; }
+            if candidate.is_dir() {
+                return candidate;
+            }
             match p.parent() {
                 Some(parent) => p = parent,
                 None => break,
@@ -141,7 +163,9 @@ fn fixtures_dir() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     for ancestor in cwd.ancestors() {
         let candidate = ancestor.join("pan-daemon/tests/fixtures");
-        if candidate.is_dir() { return candidate; }
+        if candidate.is_dir() {
+            return candidate;
+        }
     }
     // Last resort: the `tests/fixtures` next to the binary.
     cwd.join("tests/fixtures")

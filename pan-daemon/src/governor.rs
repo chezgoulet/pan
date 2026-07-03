@@ -36,7 +36,9 @@ pub struct ResolveGovernor<'a> {
 }
 
 impl<'a> Governor for ResolveGovernor<'a> {
-    fn id(&self) -> &str { "gov.daemon.resolve" }
+    fn id(&self) -> &str {
+        "gov.daemon.resolve"
+    }
 
     fn govern(&self, capability: &str, _args: &Value) -> Verdict {
         if self.registry.lookup(capability).is_some() {
@@ -47,7 +49,9 @@ impl<'a> Governor for ResolveGovernor<'a> {
             // session when it catches `PipelineError::Unresolved` BEFORE we get
             // here. This branch exists for symmetry and so a future caller can
             // route a synthetic Invoke through govern without first resolving.
-            Verdict::Deny { reason: format!("capability `{capability}` is not registered") }
+            Verdict::Deny {
+                reason: format!("capability `{capability}` is not registered"),
+            }
         }
     }
 }
@@ -64,7 +68,8 @@ mod tests {
                 id: (*id).into(),
                 summary: String::new(),
                 args_schema: serde_json::json!({"type": "object"}),
-            }).unwrap();
+            })
+            .unwrap();
         }
         r
     }
@@ -73,7 +78,10 @@ mod tests {
     fn registered_capability_is_allowed() {
         let r = reg_with(&["npc.move_to"]);
         let g = ResolveGovernor { registry: &r };
-        assert!(matches!(g.govern("npc.move_to", &Value::Null), Verdict::Allow));
+        assert!(matches!(
+            g.govern("npc.move_to", &Value::Null),
+            Verdict::Allow
+        ));
     }
 
     #[test]
@@ -83,8 +91,10 @@ mod tests {
         let v = g.govern("npc.fly_ship", &Value::Null);
         match v {
             Verdict::Deny { reason } => {
-                assert!(reason.contains("npc.fly_ship"),
-                    "reason should name the unknown capability: {reason}");
+                assert!(
+                    reason.contains("npc.fly_ship"),
+                    "reason should name the unknown capability: {reason}"
+                );
             }
             other => panic!("expected Deny, got {other:?}"),
         }

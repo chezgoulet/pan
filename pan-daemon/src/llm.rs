@@ -31,7 +31,9 @@ use std::net::TcpStream;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use pan_core::schema::{ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger};
+use pan_core::schema::{
+    ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger,
+};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -93,7 +95,12 @@ fn resolve_uncached() -> Option<LlmConfig> {
         ApiKind::OpenAiCompat
     };
     eprintln!("pan llm: {host}:{port} model {model} ({api:?})");
-    Some(LlmConfig { host, port, model, api })
+    Some(LlmConfig {
+        host,
+        port,
+        model,
+        api,
+    })
 }
 
 /// `http://host[:port]` only. https is a deliberate error: this client has no
@@ -124,7 +131,8 @@ fn first_model(host: &str, port: u16) -> Option<String> {
 pub fn warm_up(config: &LlmConfig) {
     let config = config.clone();
     std::thread::spawn(move || {
-        let messages = serde_json::json!([{"role": "user", "content": "Say the single word: ready"}]);
+        let messages =
+            serde_json::json!([{"role": "user", "content": "Say the single word: ready"}]);
         let started = std::time::Instant::now();
         match chat(&config, &messages, 2) {
             Ok(_) => eprintln!("pan llm: warm-up ok ({} ms)", started.elapsed().as_millis()),
@@ -164,7 +172,9 @@ impl Provider for LlmProvider {
                     Decision {
                         intents: vec![
                             ActionIntent::Express { body: line },
-                            ActionIntent::Conclude { outcome: Outcome::Achieved },
+                            ActionIntent::Conclude {
+                                outcome: Outcome::Achieved,
+                            },
                         ],
                     }
                 }
@@ -206,7 +216,11 @@ fn clean_line(raw: &str) -> String {
 
 fn abandoned(reason: &str) -> Decision {
     eprintln!("pan llm: decide failed: {reason}");
-    Decision { intents: vec![ActionIntent::Conclude { outcome: Outcome::Abandoned }] }
+    Decision {
+        intents: vec![ActionIntent::Conclude {
+            outcome: Outcome::Abandoned,
+        }],
+    }
 }
 
 fn system_prompt(goal: &Goal, ctx: &Context) -> String {
@@ -237,7 +251,11 @@ fn user_turn(goal: &Goal) -> String {
 
 /// One chat completion, returning the assistant's raw text. Dialect
 /// differences (path, token-cap key, response shape) stay inside this fn.
-fn chat(config: &LlmConfig, messages: &serde_json::Value, max_tokens: u32) -> Result<String, String> {
+fn chat(
+    config: &LlmConfig,
+    messages: &serde_json::Value,
+    max_tokens: u32,
+) -> Result<String, String> {
     let (path, body) = match config.api {
         ApiKind::OllamaNative => (
             "/api/chat",
@@ -263,7 +281,12 @@ fn chat(config: &LlmConfig, messages: &serde_json::Value, max_tokens: u32) -> Re
         ),
     };
     let response = http_request(
-        &config.host, config.port, "POST", path, Some(&body.to_string()), HTTP_TIMEOUT,
+        &config.host,
+        config.port,
+        "POST",
+        path,
+        Some(&body.to_string()),
+        HTTP_TIMEOUT,
     )?;
     let parsed: serde_json::Value =
         serde_json::from_str(&response).map_err(|e| format!("bad completion JSON: {e}"))?;
@@ -292,15 +315,21 @@ fn http_request(
     timeout: Duration,
 ) -> Result<String, String> {
     let mut stream = TcpStream::connect((host, port)).map_err(|e| format!("connect: {e}"))?;
-    stream.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
-    stream.set_write_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
 
     let body = json_body.unwrap_or("");
     let request = format!(
         "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).map_err(|e| format!("send: {e}"))?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("send: {e}"))?;
 
     let mut raw = String::new();
     stream
@@ -318,7 +347,10 @@ fn http_request(
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(|| format!("bad status line: {status_line:?}"))?;
     if status != 200 {
-        return Err(format!("HTTP {status}: {}", &response_body[..response_body.len().min(300)]));
+        return Err(format!(
+            "HTTP {status}: {}",
+            &response_body[..response_body.len().min(300)]
+        ));
     }
     Ok(response_body.to_string())
 }
@@ -354,7 +386,10 @@ mod tests {
             id: "g1".into(),
             revision: 1,
             objective: "Respond in character.".into(),
-            trigger: Trigger::Utterance { from: "player".into(), content: "You alright?".into() },
+            trigger: Trigger::Utterance {
+                from: "player".into(),
+                content: "You alright?".into(),
+            },
         }
     }
 
@@ -373,13 +408,19 @@ mod tests {
             200,
             r#"{"choices":[{"message":{"role":"assistant","content":"  Been through worse. "}}]}"#,
         );
-        let provider = LlmProvider { config: config(port) };
+        let provider = LlmProvider {
+            config: config(port),
+        };
         let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
         assert_eq!(
             decision.intents,
             vec![
-                ActionIntent::Express { body: "Been through worse.".into() },
-                ActionIntent::Conclude { outcome: Outcome::Achieved },
+                ActionIntent::Express {
+                    body: "Been through worse.".into()
+                },
+                ActionIntent::Conclude {
+                    outcome: Outcome::Achieved
+                },
             ]
         );
     }
@@ -387,10 +428,15 @@ mod tests {
     #[test]
     fn http_error_becomes_conclude_abandoned() {
         let port = fake_server(500, r#"{"error":"boom"}"#);
-        let provider = LlmProvider { config: config(port) };
+        let provider = LlmProvider {
+            config: config(port),
+        };
         let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
         assert_eq!(decision.outcome(), Some(Outcome::Abandoned));
-        assert!(decision.intents.iter().all(|i| !matches!(i, ActionIntent::Express { .. })));
+        assert!(decision
+            .intents
+            .iter()
+            .all(|i| !matches!(i, ActionIntent::Express { .. })));
     }
 
     #[test]
@@ -426,7 +472,9 @@ mod tests {
         let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
         assert_eq!(
             decision.intents[0],
-            ActionIntent::Express { body: "Steady as she goes.".into() }
+            ActionIntent::Express {
+                body: "Steady as she goes.".into()
+            }
         );
     }
 
@@ -453,8 +501,14 @@ mod tests {
 
     #[test]
     fn base_url_parsing() {
-        assert_eq!(parse_http_base("http://127.0.0.1:11434").unwrap(), ("127.0.0.1".into(), 11434));
-        assert_eq!(parse_http_base("http://localhost").unwrap(), ("localhost".into(), 80));
+        assert_eq!(
+            parse_http_base("http://127.0.0.1:11434").unwrap(),
+            ("127.0.0.1".into(), 11434)
+        );
+        assert_eq!(
+            parse_http_base("http://localhost").unwrap(),
+            ("localhost".into(), 80)
+        );
         assert!(parse_http_base("https://api.example.com").is_err());
         assert!(parse_http_base("ftp://x").is_err());
     }

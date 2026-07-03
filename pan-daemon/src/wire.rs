@@ -107,7 +107,9 @@ impl Serialize for Envelope {
         // Field order matches the canonical wire spelling where serde
         // permits. `re` is omitted when None.
         let mut n_fields = 4; // v, seq, type, body
-        if self.re.is_some() { n_fields += 1; }
+        if self.re.is_some() {
+            n_fields += 1;
+        }
         let mut st = ser.serialize_struct("Envelope", n_fields)?;
         st.serialize_field("v", &self.v)?;
         st.serialize_field("seq", &self.seq)?;
@@ -156,17 +158,29 @@ impl<'de> Deserialize<'de> for Envelope {
                         // (forward-compat; protocol says "MUST ignore unknown
                         // optional envelope keys"). Required keys (`v`, `seq`,
                         // `type`, `body`) would have to be present anyway.
-                        _ => { let _: serde::de::IgnoredAny = map.next_value()?; }
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
                     }
                 }
                 let v = f.v.ok_or_else(|| serde::de::Error::missing_field("v"))?;
-                let seq = f.seq.ok_or_else(|| serde::de::Error::missing_field("seq"))?;
+                let seq = f
+                    .seq
+                    .ok_or_else(|| serde::de::Error::missing_field("seq"))?;
                 let re = f.re.unwrap_or(None);
-                let ty = f.ty.ok_or_else(|| serde::de::Error::missing_field("type"))?;
-                let body_val = f.body.ok_or_else(|| serde::de::Error::missing_field("body"))?;
-                let body = Body::from_value(ty, body_val)
-                    .map_err(serde::de::Error::custom)?;
-                Ok(Envelope { v, seq, re, ty, body })
+                let ty =
+                    f.ty.ok_or_else(|| serde::de::Error::missing_field("type"))?;
+                let body_val = f
+                    .body
+                    .ok_or_else(|| serde::de::Error::missing_field("body"))?;
+                let body = Body::from_value(ty, body_val).map_err(serde::de::Error::custom)?;
+                Ok(Envelope {
+                    v,
+                    seq,
+                    re,
+                    ty,
+                    body,
+                })
             }
         }
         de.deserialize_map(EnvVisitor)
@@ -439,7 +453,13 @@ impl Envelope {
     /// Build an outgoing envelope with the given body. `re` is set when the
     /// message is a response to a specific inbound `seq`.
     pub fn outgoing(seq: u64, re: Option<u64>, body: Body) -> Self {
-        Envelope { v: PROTOCOL_VERSION, seq, re, ty: body.ty(), body }
+        Envelope {
+            v: PROTOCOL_VERSION,
+            seq,
+            re,
+            ty: body.ty(),
+            body,
+        }
     }
 
     /// Convenience: decode an envelope from one NDJSON line.
@@ -495,15 +515,15 @@ mod tests {
                 goal_revision: 1,
                 decision: v::Decision {
                     intents: vec![
-                        v::ActionIntent::Express {
-                            body: "hi".into(),
-                        },
+                        v::ActionIntent::Express { body: "hi".into() },
                         v::ActionIntent::Invoke {
                             capability: "npc.remember".into(),
                             args: serde_json::json!({"text": "x", "importance": 0.8}),
                             correlation: Some("toolu_01".into()),
                         },
-                        v::ActionIntent::Conclude { outcome: v::Outcome::Achieved },
+                        v::ActionIntent::Conclude {
+                            outcome: v::Outcome::Achieved,
+                        },
                     ],
                 },
             }),
@@ -526,19 +546,27 @@ mod tests {
             correlation: None,
         };
         let s = serde_json::to_string(&intent).unwrap();
-        assert!(!s.contains("correlation"),
-            "None correlation must not serialize: {s}");
+        assert!(
+            !s.contains("correlation"),
+            "None correlation must not serialize: {s}"
+        );
     }
 
     /// Ack body is the empty object `{}`. Round-trips.
     #[test]
     fn ack_body_is_empty_object() {
         let env = Envelope {
-            v: 0, seq: 4, re: Some(2), ty: MessageType::Ack,
+            v: 0,
+            seq: 4,
+            re: Some(2),
+            ty: MessageType::Ack,
             body: Body::Ack(AckBody::default()),
         };
         let s = env.to_ndjson().unwrap();
-        assert!(s.ends_with("\"body\":{}}"), "expected `body\":{{}}`, got: {s}");
+        assert!(
+            s.ends_with("\"body\":{}}"),
+            "expected `body\":{{}}`, got: {s}"
+        );
         let back = Envelope::from_ndjson(&s).unwrap();
         assert_eq!(env, back);
     }
@@ -547,7 +575,10 @@ mod tests {
     #[test]
     fn shutdown_body_is_empty_object() {
         let env = Envelope {
-            v: 0, seq: 8, re: None, ty: MessageType::Shutdown,
+            v: 0,
+            seq: 8,
+            re: None,
+            ty: MessageType::Shutdown,
             body: Body::Shutdown(ShutdownBody::default()),
         };
         let s = env.to_ndjson().unwrap();
@@ -560,7 +591,10 @@ mod tests {
     #[test]
     fn error_body_round_trips() {
         let env = Envelope {
-            v: 0, seq: 3, re: Some(4), ty: MessageType::Error,
+            v: 0,
+            seq: 3,
+            re: Some(4),
+            ty: MessageType::Error,
             body: Body::Error(ErrorBody {
                 code: ErrorCode::UnknownCapability,
                 message: "provider requested 'npc.fly_ship' which was never registered".into(),
@@ -577,17 +611,26 @@ mod tests {
     #[test]
     fn message_type_from_wire_inverts_as_str() {
         let all = [
-            MessageType::Hello, MessageType::Welcome,
-            MessageType::RegisterCapabilities, MessageType::InstantiateSoul,
-            MessageType::ReleaseSoul, MessageType::Perceive,
-            MessageType::Decision, MessageType::Ack,
-            MessageType::Error, MessageType::Shutdown,
+            MessageType::Hello,
+            MessageType::Welcome,
+            MessageType::RegisterCapabilities,
+            MessageType::InstantiateSoul,
+            MessageType::ReleaseSoul,
+            MessageType::Perceive,
+            MessageType::Decision,
+            MessageType::Ack,
+            MessageType::Error,
+            MessageType::Shutdown,
         ];
         for ty in all {
             assert_eq!(MessageType::from_wire(ty.as_str()), Some(ty));
         }
         assert_eq!(MessageType::from_wire("frobnicate"), None);
-        assert_eq!(MessageType::from_wire("Hello"), None, "wire spelling is snake_case only");
+        assert_eq!(
+            MessageType::from_wire("Hello"),
+            None,
+            "wire spelling is snake_case only"
+        );
     }
 
     /// `re` is optional — its absence must serialize as the field being
@@ -595,11 +638,16 @@ mod tests {
     #[test]
     fn re_omitted_when_none() {
         let env = Envelope {
-            v: 0, seq: 5, re: None, ty: MessageType::Perceive,
+            v: 0,
+            seq: 5,
+            re: None,
+            ty: MessageType::Perceive,
             body: Body::Perceive(PerceiveBody {
                 soul_id: "x".into(),
                 goal: v::Goal {
-                    id: "g".into(), revision: 0, objective: "o".into(),
+                    id: "g".into(),
+                    revision: 0,
+                    objective: "o".into(),
                     trigger: v::Trigger::Tick { sequence: 0 },
                 },
                 context: v::Context::default(),

@@ -66,21 +66,33 @@ pub fn load_fixtures(dir: &Path) -> std::io::Result<Vec<Fixture>> {
         }
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let raw = std::fs::read_to_string(&path)?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("{name}: {e}")))?;
-        let direction = value.get("direction")
+        let value: Value = serde_json::from_str(&raw).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{name}: {e}"))
+        })?;
+        let direction = value
+            .get("direction")
             .and_then(|d| d.as_str())
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("{name}: missing `direction` field")))?
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{name}: missing `direction` field"),
+                )
+            })?
             .to_string();
-        let message = value.get("message")
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("{name}: missing `message` field")))?;
-        let envelope: Envelope = serde_json::from_value(message.clone())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("{name}: {e}")))?;
-        out.push(Fixture { name, direction, envelope });
+        let message = value.get("message").ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{name}: missing `message` field"),
+            )
+        })?;
+        let envelope: Envelope = serde_json::from_value(message.clone()).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{name}: {e}"))
+        })?;
+        out.push(Fixture {
+            name,
+            direction,
+            envelope,
+        });
     }
     Ok(out)
 }
@@ -99,7 +111,10 @@ pub fn validate_envelope_shape(env: &Envelope, errors: &mut Vec<String>) {
         errors.push(format!("v must be 0, got {}", env.v));
     }
     if !ALL_TYPES.contains(&env.ty) {
-        errors.push(format!("type must be one of the closed set, got {:?}", env.ty));
+        errors.push(format!(
+            "type must be one of the closed set, got {:?}",
+            env.ty
+        ));
     }
     // The body itself is an enum so its shape is fixed by the variant; we just
     // confirm the discriminator matches.
@@ -107,7 +122,8 @@ pub fn validate_envelope_shape(env: &Envelope, errors: &mut Vec<String>) {
     if actual != env.ty {
         errors.push(format!(
             "envelope `type` ({:?}) does not match body discriminator ({:?})",
-            env.ty, actual));
+            env.ty, actual
+        ));
     }
     if let Some(re) = env.re {
         // re is u64; non-negativity is a type-system guarantee. The schema
@@ -130,12 +146,15 @@ pub fn check_fixtures(dir: &Path) -> Result<ConformanceReport, String> {
             // And re-serialize the envelope compactly and confirm it's NDJSON-safe
             // (no NaN / Infinity, all string keys). The Python checker does the
             // same; we mirror it.
-            let line = fx.envelope.to_ndjson()
+            let line = fx
+                .envelope
+                .to_ndjson()
                 .map_err(|e| format!("{}: ndjson serialize: {e}", fx.name))?;
             let reparsed: Value = serde_json::from_str(&line)
                 .map_err(|e| format!("{}: ndjson reparse: {e}", fx.name))?;
-            if reparsed != serde_json::to_value(&fx.envelope)
-                .map_err(|e| format!("{}: back to value: {e}", fx.name))?
+            if reparsed
+                != serde_json::to_value(&fx.envelope)
+                    .map_err(|e| format!("{}: back to value: {e}", fx.name))?
             {
                 errors.push(format!("{}: ndjson round-trip drifted", fx.name));
             }
@@ -147,7 +166,8 @@ pub fn check_fixtures(dir: &Path) -> Result<ConformanceReport, String> {
         }
     }
     // Coverage: every message type the wire defines must have ≥1 fixture.
-    let mut missing: Vec<&str> = ALL_TYPES.iter()
+    let mut missing: Vec<&str> = ALL_TYPES
+        .iter()
         .filter(|t| !seen_types.contains(t.as_str()))
         .map(|t| t.as_str())
         .collect();
@@ -171,7 +191,9 @@ pub struct ConformanceReport {
 }
 
 impl ConformanceReport {
-    pub fn is_ok(&self) -> bool { self.errors.is_empty() }
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +206,9 @@ mod tests {
         let mut errs = Vec::new();
         let env = Envelope {
             v: 1, // wrong on purpose
-            seq: 0, re: None, ty: MessageType::Hello,
+            seq: 0,
+            re: None,
+            ty: MessageType::Hello,
             body: crate::wire::Body::Hello(crate::wire::HelloBody {
                 protocol_version: 1,
                 profile: "x".into(),
@@ -192,7 +216,9 @@ mod tests {
             }),
         };
         validate_envelope_shape(&env, &mut errs);
-        assert!(errs.iter().any(|e| e.contains("v must be 0")),
-            "should have flagged v != 0: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("v must be 0")),
+            "should have flagged v != 0: {errs:?}"
+        );
     }
 }
