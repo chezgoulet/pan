@@ -20,14 +20,14 @@
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::session::{Session, SessionError};
 use crate::wire::{Body, Envelope, ErrorBody};
 
 /// The maximum NDJSON line length accepted. 1 MiB is generous for any sane
 /// fixture / perceive / decision; anything larger is a hostile host.
-const MAX_LINE_BYTES: usize = 1 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 /// The server. Holds the listener and the optional "current connection"
 /// (which is the one allowed per the protocol). When a new host connects,
@@ -85,15 +85,19 @@ impl Server {
     /// session, writes replies, and exits cleanly on `shutdown` or EOF.
     /// On `SessionError::VersionUnsupported` the error is written and the
     /// connection is closed.
+    ///
+    /// Perceives are ASYNCHRONOUS (M7): each mind call runs on its own
+    /// worker thread, so a slow LLM completion never blocks the read loop —
+    /// a rules soul answers instantly while another soul is still thinking,
+    /// and decisions reach the host in completion order (the protocol
+    /// requires hosts to tolerate exactly that; they correlate by `re`).
+    /// The session state and the write half live behind mutexes; lock order
+    /// is always session before writer.
     pub fn drive(stream: TcpStream) -> io::Result<()> {
-        // The connection is half-duplex by hand: one BufReader on a clone for
-        // reading, the original TcpStream for writing. We could go async, but
-        // for a line-at-a-time protocol the synchronous path is the
-        // easiest to read and profile.
         let read_stream = stream.try_clone()?;
         let mut reader = BufReader::new(read_stream);
-        let mut writer = stream;
-        let mut session = Session::new();
+        let writer = Arc::new(Mutex::new(stream));
+        let session = Arc::new(Mutex::new(Session::new()));
 
         loop {
             let mut line = String::new();
@@ -118,15 +122,16 @@ impl Server {
             }
             if line.len() > MAX_LINE_BYTES {
                 // Pathological / hostile. Send a bad_frame and keep going.
+                let mut s = lock(&session);
                 let out = Envelope::outgoing(
-                    session.alloc_seq(),
+                    s.alloc_seq(),
                     None,
                     Body::Error(ErrorBody {
                         code: crate::wire::ErrorCode::BadFrame,
                         message: format!("line exceeds {MAX_LINE_BYTES} bytes"),
                     }),
                 );
-                write_ndjson(&mut writer, &out)?;
+                write_all(&session, &writer, Some(s), &[out])?;
                 continue;
             }
 
@@ -136,12 +141,13 @@ impl Server {
                     // Rejected line: `bad_frame` (not a valid envelope) or
                     // `unknown_type` (valid envelope, type outside the closed
                     // set). Either way the connection stays open.
+                    let mut s = lock(&session);
                     let out = Envelope::outgoing(
-                        session.alloc_seq(),
+                        s.alloc_seq(),
                         None,
                         Body::Error(ErrorBody { code, message }),
                     );
-                    write_ndjson(&mut writer, &out)?;
+                    write_all(&session, &writer, Some(s), &[out])?;
                     continue;
                 }
             };
@@ -151,11 +157,37 @@ impl Server {
             // the loop after writing the response(s).
             let inbound_was_shutdown = env.ty == crate::wire::MessageType::Shutdown;
 
-            match session.handle(env) {
-                Ok(responses) => {
-                    for r in &responses {
-                        write_ndjson(&mut writer, &r)?;
+            // Perceive fans out to a worker: begin under the lock (cheap),
+            // decide outside every lock (slow), finish under the lock (the
+            // enact boundary, where supersession discards stale work).
+            if env.ty == crate::wire::MessageType::Perceive {
+                let mut s = lock(&session);
+                match s.begin_perceive(env.seq, env.body) {
+                    Err(replies) => {
+                        write_all(&session, &writer, Some(s), &replies)?;
                     }
+                    Ok(job) => {
+                        drop(s); // the mind call must run outside every lock
+                        let session2 = Arc::clone(&session);
+                        let writer2 = Arc::clone(&writer);
+                        std::thread::spawn(move || {
+                            let decision = job.provider.decide(&job.goal, &job.context, &job.caps);
+                            let s = lock(&session2);
+                            let mut s = s;
+                            let outs = s.finish_perceive(&job, decision);
+                            // The connection may already be gone (host quit
+                            // mid-thought); a failed write is not an error.
+                            let _ = write_all(&session2, &writer2, Some(s), &outs);
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let mut s = lock(&session);
+            match s.handle(env) {
+                Ok(responses) => {
+                    write_all(&session, &writer, Some(s), &responses)?;
                     if inbound_was_shutdown {
                         return Ok(());
                     }
@@ -163,7 +195,7 @@ impl Server {
                 Err(SessionError::VersionUnsupported { client, ours }) => {
                     // Send one final error message, then close.
                     let out = Envelope::outgoing(
-                        session.alloc_seq(),
+                        s.alloc_seq(),
                         None,
                         Body::Error(ErrorBody {
                             code: crate::wire::ErrorCode::VersionUnsupported,
@@ -172,7 +204,7 @@ impl Server {
                             ),
                         }),
                     );
-                    let _ = write_ndjson(&mut writer, &out);
+                    let _ = write_all(&session, &writer, Some(s), &[out]);
                     return Ok(());
                 }
                 Err(SessionError::BadFrame(_))
@@ -186,6 +218,33 @@ impl Server {
             }
         }
     }
+}
+
+/// Lock helper: a poisoned session/writer mutex means a worker panicked
+/// mid-write; the connection is unsalvageable either way, so we take the
+/// data as-is rather than propagate the panic.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Write envelopes while STILL holding the session guard that allocated
+/// their `seq` values (the writer lock nests inside it — always session
+/// before writer, never the reverse). Releasing the session lock between
+/// seq allocation and the write would let another thread's later seq hit
+/// the wire first, breaking the envelope contract's "sender-local
+/// monotonically increasing".
+fn write_all(
+    _session: &Arc<Mutex<Session>>,
+    writer: &Mutex<TcpStream>,
+    session_guard: Option<std::sync::MutexGuard<'_, Session>>,
+    envelopes: &[Envelope],
+) -> io::Result<()> {
+    let mut w = lock(writer);
+    for env in envelopes {
+        write_ndjson(&mut w, env)?;
+    }
+    drop(session_guard); // held across the writes on purpose
+    Ok(())
 }
 
 /// Parse one NDJSON line into an envelope, distinguishing the protocol's two

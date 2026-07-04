@@ -220,6 +220,24 @@ pub struct Session {
     next_seq: u64,
     registry: CapabilityRegistry,
     souls: HashMap<String, SoulState>,
+    /// Highest revision perceived per goal id — the supersession ledger.
+    /// An in-flight decision whose revision is below the ledger at its
+    /// enact boundary is discarded (`error: superseded`).
+    latest_revision: HashMap<String, u64>,
+}
+
+/// Everything one perceive needs OUTSIDE the session lock. The mind call
+/// (`provider.decide`) can take seconds of model latency; the connection
+/// driver runs it on a worker thread so the read loop — and every other
+/// soul — keeps moving. Built under the lock by [`Session::begin_perceive`],
+/// consumed by [`Session::finish_perceive`] at the enact boundary.
+pub struct PerceiveJob {
+    pub re: u64,
+    pub soul_id: String,
+    pub goal: Goal,
+    pub context: Context,
+    pub provider: Box<dyn Provider>,
+    pub caps: Vec<Capability>,
 }
 
 impl Session {
@@ -232,6 +250,7 @@ impl Session {
             next_seq: 0,
             registry: CapabilityRegistry::new(),
             souls: HashMap::new(),
+            latest_revision: HashMap::new(),
         }
     }
 
@@ -407,22 +426,42 @@ impl Session {
         Ok(vec![self.out(Some(re), Body::Ack(AckBody::default()))])
     }
 
+    /// Synchronous perceive path — used by `handle` (and the unit tests).
+    /// The connection driver uses [`begin_perceive`]/[`finish_perceive`]
+    /// directly so the mind call runs off the read loop; this method is the
+    /// same two halves glued together inline.
     fn on_perceive(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
+        match self.begin_perceive(re, body) {
+            Err(replies) => Ok(replies),
+            Ok(job) => {
+                let decision = job.provider.decide(&job.goal, &job.context, &job.caps);
+                Ok(self.finish_perceive(&job, decision))
+            }
+        }
+    }
+
+    /// First half of a perceive, under the session lock: validate the soul,
+    /// build its provider, snapshot the capability set, and record the
+    /// goal's revision in the supersession ledger. Returns the job the
+    /// caller runs OUTSIDE the lock (the mind call is the slow part), or
+    /// the immediate error replies.
+    pub fn begin_perceive(&mut self, re: u64, body: Body) -> Result<PerceiveJob, Vec<Envelope>> {
         let Body::Perceive(PerceiveBody {
             soul_id,
             goal,
             context,
         }) = body
         else {
-            return self.error_response(
-                re,
-                crate::wire::ErrorCode::BadFrame,
-                "perceive body shape",
-            );
+            return Err(vec![self.out(
+                Some(re),
+                Body::Error(ErrorBody {
+                    code: crate::wire::ErrorCode::BadFrame,
+                    message: "perceive body shape".to_string(),
+                }),
+            )]);
         };
-        // First, look up the soul. Unknown → error.
         let Some(soul) = self.souls.get(&soul_id) else {
-            return Ok(vec![self.out(
+            return Err(vec![self.out(
                 Some(re),
                 Body::Error(ErrorBody {
                     code: crate::wire::ErrorCode::UnknownSoul,
@@ -430,15 +469,47 @@ impl Session {
                 }),
             )]);
         };
-
-        // Ask the soul's mind for a decision. Minds the daemon can't host
-        // degrade to a Continue-only decision inside `provider()`.
+        // Minds the daemon can't host degrade to a Continue-only decision
+        // inside `provider()`.
         let provider: Box<dyn Provider> = soul.provider();
         let caps: Vec<Capability> = self.registry.all();
-        let decision = provider.decide(&goal, &context, &caps);
+        // Supersession ledger: this revision is now the newest for its goal.
+        let entry = self.latest_revision.entry(goal.id.clone()).or_insert(0);
+        if goal.revision > *entry {
+            *entry = goal.revision;
+        }
+        Ok(PerceiveJob {
+            re,
+            soul_id,
+            goal,
+            context,
+            provider,
+            caps,
+        })
+    }
 
-        // Enact: run every Invoke through the dispatch pipeline. The pipeline
-        // borrows from `self`; we build it once here.
+    /// Second half of a perceive, back under the session lock: the ENACT
+    /// BOUNDARY. If a newer revision of the same goal arrived while the
+    /// mind was thinking, the work is discarded here (`error: superseded`)
+    /// — the player walked away mid-sentence and nobody wants the orphaned
+    /// line. Otherwise every Invoke runs the dispatch pipeline and the
+    /// decision (or the first pipeline failure) becomes the reply.
+    pub fn finish_perceive(&mut self, job: &PerceiveJob, decision: Decision) -> Vec<Envelope> {
+        let latest = self.latest_revision.get(&job.goal.id).copied().unwrap_or(0);
+        if job.goal.revision < latest {
+            return vec![self.out(
+                Some(job.re),
+                Body::Error(ErrorBody {
+                    code: crate::wire::ErrorCode::Superseded,
+                    message: format!(
+                        "goal `{}` revision {} superseded by revision {}",
+                        job.goal.id, job.goal.revision, latest
+                    ),
+                }),
+            )];
+        }
+
+        // Enact: run every Invoke through the dispatch pipeline.
         //
         // On the `govern` slot: the wire-level `unknown_capability` check is
         // already enforced at the pipeline's `resolve` stage (it returns
@@ -453,9 +524,6 @@ impl Session {
             executor: &EchoExecutor,
             events: &stream,
         };
-        // Reference ResolveGovernor to confirm it compiles and is part of the
-        // daemon's M1 vocabulary. The wire-level check below uses the
-        // pipeline's own resolve stage, which is the structural choke point.
         let _g = ResolveGovernor {
             registry: &self.registry,
         };
@@ -470,21 +538,19 @@ impl Session {
                 // The wire's `decision` response carries the *original* goal
                 // id and revision so the host can correlate.
                 let body = DecisionBody {
-                    soul_id,
-                    goal_id: goal.id,
-                    goal_revision: goal.revision,
+                    soul_id: job.soul_id.clone(),
+                    goal_id: job.goal.id.clone(),
+                    goal_revision: job.goal.revision,
                     decision: Decision { intents },
                 };
-                Ok(vec![self.out(Some(re), Body::Decision(body))])
+                vec![self.out(Some(job.re), Body::Decision(body))]
             }
             DispatchOutcome::Failed { code, message } => {
                 // The wire's `error` reply (per the Soul Protocol): the
                 // daemon's validate stage replies with `error code:
                 // unknown_capability` etc. on a failed Invoke. The host
                 // correlates by `re`.
-                Ok(vec![
-                    self.out(Some(re), Body::Error(ErrorBody { code, message }))
-                ])
+                vec![self.out(Some(job.re), Body::Error(ErrorBody { code, message }))]
             }
         }
     }
@@ -547,6 +613,12 @@ impl Session {
         // The protocol says: `shutdown` causes connection close. We send
         // `ack` first so the host sees a clean end; the driver then closes.
         Ok(vec![self.out(Some(re), Body::Ack(AckBody::default()))])
+    }
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Session::new()
     }
 }
 
@@ -860,6 +932,107 @@ mod tests {
         assert_eq!(
             rules[1].when_signal_over.as_ref().map(|(n, _)| n.as_str()),
             Some("hull")
+        );
+    }
+}
+
+#[cfg(test)]
+mod async_perceive_tests {
+    use super::*;
+    use crate::wire::{
+        Body, Envelope, HelloBody, InstantiateSoulBody, MessageType, MindKind, PerceiveBody,
+    };
+    use pan_core::schema as v;
+
+    fn ready_session() -> Session {
+        let mut s = Session::new();
+        s.handle(Envelope {
+            v: 0,
+            seq: 0,
+            re: None,
+            ty: MessageType::Hello,
+            body: Body::Hello(HelloBody {
+                protocol_version: 0,
+                profile: "reachlock/0".into(),
+                client: "test".into(),
+            }),
+        })
+        .unwrap();
+        s.handle(Envelope {
+            v: 0,
+            seq: 1,
+            re: None,
+            ty: MessageType::InstantiateSoul,
+            body: Body::InstantiateSoul(InstantiateSoulBody {
+                soul_id: "pilot".into(),
+                mind: MindKind::Rules,
+                soul: serde_json::json!({"rules": []}),
+            }),
+        })
+        .unwrap();
+        s
+    }
+
+    fn perceive_body(goal_id: &str, revision: u64) -> Body {
+        Body::Perceive(PerceiveBody {
+            soul_id: "pilot".into(),
+            goal: Goal {
+                id: goal_id.into(),
+                revision,
+                objective: "x".into(),
+                trigger: v::Trigger::Tick { sequence: 1 },
+            },
+            context: v::Context::default(),
+        })
+    }
+
+    /// The enact boundary discards in-flight work superseded by a newer
+    /// revision: begin rev 1, begin rev 2, THEN finish rev 1 → the rev-1
+    /// job answers `error: superseded`; rev 2 completes as a decision.
+    #[test]
+    fn stale_revision_is_discarded_at_the_enact_boundary() {
+        let mut s = ready_session();
+        let job1 = s.begin_perceive(10, perceive_body("conv", 1)).unwrap();
+        let job2 = s.begin_perceive(11, perceive_body("conv", 2)).unwrap();
+
+        // job1 finishes AFTER rev 2 was perceived — the player walked away.
+        let d1 = job1.provider.decide(&job1.goal, &job1.context, &job1.caps);
+        let outs = s.finish_perceive(&job1, d1);
+        assert_eq!(outs.len(), 1);
+        match &outs[0].body {
+            Body::Error(e) => {
+                assert_eq!(e.code, crate::wire::ErrorCode::Superseded);
+                assert_eq!(outs[0].re, Some(10));
+            }
+            other => panic!("expected superseded error, got {other:?}"),
+        }
+
+        // job2 is the live revision; it completes normally.
+        let d2 = job2.provider.decide(&job2.goal, &job2.context, &job2.caps);
+        let outs = s.finish_perceive(&job2, d2);
+        match &outs[0].body {
+            Body::Decision(d) => {
+                assert_eq!(d.goal_revision, 2);
+                assert_eq!(outs[0].re, Some(11));
+            }
+            other => panic!("expected decision, got {other:?}"),
+        }
+    }
+
+    /// Same-revision re-delivery is NOT superseded (idempotent perceive);
+    /// and an unrelated goal id is never affected by another goal's ledger.
+    #[test]
+    fn supersession_is_scoped_to_the_goal_id() {
+        let mut s = ready_session();
+        let job_a = s.begin_perceive(20, perceive_body("goal_a", 5)).unwrap();
+        let _job_b = s.begin_perceive(21, perceive_body("goal_b", 1)).unwrap();
+        let d = job_a
+            .provider
+            .decide(&job_a.goal, &job_a.context, &job_a.caps);
+        let outs = s.finish_perceive(&job_a, d);
+        assert!(
+            matches!(outs[0].body, Body::Decision(_)),
+            "goal_a rev 5 must not be superseded by goal_b rev 1"
         );
     }
 }
