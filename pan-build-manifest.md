@@ -47,14 +47,14 @@ through an always-allow govern stage, to a stub capability, and sees the event o
 The smallest plugin set that makes Pan do something real. End state: type into a terminal,
 a model decides, a local tool runs, you see a reply. This is the moment Pan becomes a tool.
 
-- [ ] `provider.llm.anthropic` (or your one chosen model) — first real provider.
-- [ ] `cap.registry` — capabilities register here; pipeline `resolve` reads from it.
-- [ ] `gov.allow` — trivial always-allow, so the `govern` stage runs. Replaced in Wave 4.
-- [ ] `exec.local` — in-process execution so `Invoke` does real work.
-- [ ] `cap.shell` — first actual verb (run a command). Proves the whole pipeline.
-- [ ] `obs.logging` — structured logs on observation hooks. You are blind without this.
-- [ ] `channel.cli` — stdin/stdout. The simplest possible human interface.
-- [ ] `state.memory` — in-process, non-persistent state so `observe`/`commit` have a slot.
+- [x] `provider.llm` — generic OpenAI-compatible provider (backend-agnostic; OpenRouter free tier default for dev/testing). Supersedes the original `provider.llm.anthropic` (#9) — see `pan-core/src/providers_llm.rs`.
+- [x] `cap.registry` — capabilities register here; pipeline `resolve` reads from it. (Core `CapabilityRegistry`, exercised by the CLI.)
+- [x] `gov.allow` — trivial always-allow, so the `govern` stage runs. Replaced in Wave 4. (`pan-core/src/plugins/gov_allow.rs`)
+- [x] `exec.local` — in-process execution so `Invoke` does real work. (`pan-core/src/plugins/exec_local.rs`)
+- [x] `cap.shell` — first actual verb (run a command). Proves the whole pipeline. (Registered by the CLI; runs via `exec.local`.)
+- [x] `obs.logging` — structured logs on observation hooks. You are blind without this. (`pan-core/src/plugins/obs_logging.rs` + `LogSink` behind the event stream.)
+- [x] `channel.cli` — stdin/stdout. The simplest possible human interface. (`pan-cli/` binary.)
+- [x] `state.memory` — in-process, non-persistent state so `observe`/`commit` have a slot. (`pan-core/src/plugins/state_memory.rs`)
 
 **Exit test:** in a terminal, "list the files in /tmp" → model emits `Invoke(cap.shell, …)` →
 runs → reply printed → action visible in logs. **You now have a usable agent.**

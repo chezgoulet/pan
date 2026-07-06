@@ -30,7 +30,9 @@ pub mod events;
 pub mod handles;
 pub mod loop_engine;
 pub mod pipeline;
+pub mod plugins;
 pub mod providers;
+pub mod providers_llm;
 pub mod registry;
 pub mod schema;
 

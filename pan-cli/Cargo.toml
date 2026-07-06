@@ -1,0 +1,15 @@
+[package]
+name = "pan-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Pan CLI agent — the Wave 1 walking skeleton: stdin/stdout, a model decides, cap.shell runs, you see the result."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "pan"
+path = "src/main.rs"
+
+[dependencies]
+pan-core = { path = "../pan-core" }
+serde_json = "1"

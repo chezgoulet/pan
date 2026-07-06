@@ -10,10 +10,12 @@
 
 use crate::schema::{ActionIntent, Capability, Context, Decision, Goal, Outcome, Trigger, Value};
 
-/// 1) LLM provider. In reality this maps Goal+Context+caps -> a chat completion,
-/// calls a model, and parses tool_use/stop_reason back. Here the model call is
-/// stubbed; what matters is that the mapping uses ONLY public contract types and
-/// that every chat-shaped detail stays private to this impl.
+/// 1) LLM provider — **stub / superseded**. The real, backend-agnostic
+/// implementation lives in `crate::providers_llm::Llm` (OpenAI-compatible,
+/// OpenRouter free tier default). This toy remains only as the Wave-0 leak-test
+/// fixture: it proves an LLM-shaped provider can be held behind the `Provider`
+/// trait using ONLY public contract types. Do not extend this; extend
+/// `providers_llm::Llm`.
 pub mod llm {
     use super::*;
     use crate::schema::Provider;
