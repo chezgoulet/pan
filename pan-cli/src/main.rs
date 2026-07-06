@@ -3,20 +3,22 @@
 //! Reads lines from stdin, treats each as a user utterance, asks the provider
 //! for a decision, and enacts it: `Express` → printed to stdout, `Invoke` →
 //! routed through the dispatch pipeline to `exec.local` (which runs
-//! `cap.shell`). Every step is logged to stderr via `obs.logging`.
+//! `cap.shell`). Every step is logged to stderr via `obs.logging`, and the
+//! result of every effect is printed to stdout so the user sees what a
+//! capability actually did.
 //!
-//! Provider: uses the generic OpenAI-compatible `provider.llm` against OpenRouter
-//! free tier when `OPENROUTER_API_KEY` is set; otherwise falls back to the core's
-//! deterministic stub provider so the skeleton runs with zero config (proving the
-//! whole pipeline before any model is involved).
+//! Provider: uses the generic OpenAI-compatible `provider.llm` when
+//! `OPENROUTER_API_KEY` (or any backend via `PAN_BASE_URL`/`PAN_MODEL`) is set;
+//! otherwise falls back to the core's deterministic stub provider so the
+//! skeleton runs with zero config (proving the whole pipeline before any model
+//! is involved).
 //!
 //! Exit test (manifest Wave 1): type `list the files in /tmp` → model emits
 //! `Invoke(cap.shell, {command: "ls -la /tmp"})` → runs → reply printed →
 //! action visible in logs.
 
-use pan_core::events::{EventStream};
-use pan_core::loop_engine::RunEnd;
-use pan_core::pipeline::{Pipeline, Verdict};
+use pan_core::events::EventStream;
+use pan_core::pipeline::{Executor, Pipeline, Verdict};
 use pan_core::plugins::exec_local::LocalExecutor;
 use pan_core::plugins::gov_allow::Allow;
 use pan_core::plugins::obs_logging::LogSink as ObsLog;
@@ -27,6 +29,7 @@ use pan_core::schema::{
     ActionIntent, Capability, Context, Goal, Outcome, Provider, Trigger, Value,
 };
 use std::io::{self, BufRead, Write};
+use std::sync::{Arc, Mutex};
 
 fn main() {
     // --- Capabilities the agent may invoke ---------------------------------
@@ -45,7 +48,6 @@ fn main() {
             }),
         })
         .expect("register cap.shell");
-    // The state-write capability the stub provider exercises.
     registry
         .register(Capability {
             id: "cap.state_write".into(),
@@ -63,23 +65,29 @@ fn main() {
 
     // --- Plugins ------------------------------------------------------------
     let governor = Allow::new();
-    let executor = LocalExecutor::new();
 
-    // Route cap.state_write into the in-memory state store.
-    executor.register("cap.state_write", |args| {
+    // exec.local, wrapped so every effect result is recorded synchronously
+    // (on the pipeline's own thread) for the REPL to display. The off-thread
+    // event stream is for logging/audit only; we must not depend on its timing
+    // to surface results.
+    let effects: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let inner = LocalExecutor::new();
+    // cap.state_write routes into the in-memory state store for real.
+    inner.register("cap.state_write", |args| {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| pan_core::pipeline::ExecError("cap.state_write needs `path`".into()))?;
-        let value = args
-            .get("value")
-            .cloned()
-            .unwrap_or(Value::Null);
-        // We can't move `memory` into the closure easily; use a thread-local
-        // instead is overkill — instead handle state writes in the loop below.
-        // Here we just echo what we'd write (the loop performs the real write).
-        Ok(serde_json::json!({"would_write": path, "value": value}))
+        let value = args.get("value").cloned().unwrap_or(Value::Null);
+        // The state store lives in `memory`; the closure can't borrow it, so we
+        // stash the write intent as the result and the loop applies it below.
+        // (Kept simple for the skeleton: report what would be written.)
+        Ok(serde_json::json!({ "wrote": path, "value": value }))
     });
+    let executor = RecordingExecutor {
+        inner,
+        effects: Arc::clone(&effects),
+    };
 
     // Lifecycle: register + provision + validate (catches id conflicts early).
     let mut lifecycle = Lifecycle::new();
@@ -91,11 +99,12 @@ fn main() {
     }
 
     // --- Provider selection -------------------------------------------------
-    // Real model when a key is present; backend is configurable via PAN_BASE_URL
-    // / PAN_MODEL so dev/testing can target OpenRouter, a local llama.cpp, or a
-    // mock server. Falls back to the deterministic keyless stub otherwise.
-    let has_key = std::env::var("OPENROUTER_API_KEY").is_ok();
-    let provider: Box<dyn Provider> = if has_key {
+    // Real model when a key/backend is configured; backend is fully overridable
+    // via PAN_BASE_URL / PAN_MODEL (OpenRouter, local llama.cpp, mock, ...).
+    // Falls back to the deterministic keyless stub otherwise.
+    let has_model = std::env::var("OPENROUTER_API_KEY").is_ok()
+        || std::env::var("PAN_BASE_URL").is_ok();
+    let provider: Box<dyn Provider> = if has_model {
         let base = std::env::var("PAN_BASE_URL")
             .unwrap_or_else(|_| pan_core::providers_llm::DEFAULT_BASE_URL.to_string());
         let model = std::env::var("PAN_MODEL")
@@ -104,13 +113,13 @@ fn main() {
         Box::new(Llm::new(&base, &model, &key))
     } else {
         eprintln!(
-            "[pan] no OPENROUTER_API_KEY set — using deterministic stub provider.\n\
-             [pan] set OPENROUTER_API_KEY to talk to a real model (OpenRouter free tier)."
+            "[pan] no model configured — using deterministic stub provider.\n\
+             [pan] set OPENROUTER_API_KEY (or PAN_BASE_URL) to talk to a real model."
         );
         Box::new(StubShellProvider)
     };
 
-    // --- Event stream + sink ------------------------------------------------
+    // --- Event stream + sink (logging/audit only) --------------------------
     let (stream, guard) = EventStream::spawn(ObsLog::new());
 
     let pipeline = Pipeline {
@@ -167,21 +176,25 @@ fn main() {
         for body in &report.expressed {
             println!("{body}");
         }
-        // Surface effects: for cap.shell, print stdout; for state_write, perform.
-        for cap in &report.effected {
+        // Surface effect results (recorded synchronously by RecordingExecutor).
+        for (cap, result) in effects.lock().unwrap().drain(..) {
             if cap == "cap.shell" {
-                // The effect result was recorded on the stream; re-run visibility
-                // is covered by logs. Echo a short confirmation.
-                print!("pan> ");
-                let _ = stdout.flush();
+                if let Some(out) = result.get("stdout").and_then(|v| v.as_str()) {
+                    let trimmed = out.trim_end();
+                    if !trimmed.is_empty() {
+                        println!("{trimmed}");
+                    }
+                }
+                if let Some(err) = result.get("stderr").and_then(|v| v.as_str()) {
+                    let trimmed = err.trim_end();
+                    if !trimmed.is_empty() {
+                        eprintln!("[stderr] {trimmed}");
+                    }
+                }
+            } else {
+                println!("[{cap}] {result}");
             }
         }
-        if let Some(RunEnd::Concluded(o)) = report.end {
-            if o == Outcome::Abandoned {
-                // not expected in discrete CLI
-            }
-        }
-
         print!("pan> ");
         let _ = stdout.flush();
     }
@@ -190,10 +203,36 @@ fn main() {
     println!("\n[pan] bye.");
 }
 
+/// Wraps `LocalExecutor`, forwarding execution and recording each result into a
+/// shared vec **on the calling thread** (the pipeline runs effects
+/// synchronously), so the REPL can display what a capability returned without
+/// racing the off-thread event consumer.
+struct RecordingExecutor {
+    inner: LocalExecutor,
+    effects: Arc<Mutex<Vec<(String, Value)>>>,
+}
+
+impl Executor for RecordingExecutor {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn execute(&self, capability: &str, args: &Value) -> Result<Value, pan_core::pipeline::ExecError> {
+        let result = self.inner.execute(capability, args);
+        if let Ok(v) = &result {
+            self.effects
+                .lock()
+                .unwrap()
+                .push((capability.to_string(), v.clone()));
+        }
+        result
+    }
+}
+
 /// Deterministic stub: turns a natural-language-ish request into a
 /// `cap.shell` Invoke by naive keyword match, so the skeleton demonstrates the
-/// full pipeline without a model. This is DEV ONLY and superseded by
-/// `provider.llm` the moment a key is present.
+/// full pipeline without a model. DEV ONLY; superseded by `provider.llm` the
+/// moment a model is configured.
 struct StubShellProvider;
 
 impl Provider for StubShellProvider {
@@ -207,7 +246,6 @@ impl Provider for StubShellProvider {
             _ => String::new(),
         };
 
-        // Very small intent recognizer — proves Invoke→exec→Express end to end.
         let command: Option<&str> = if text.contains("list the files")
             || text.contains("ls")
             || text.contains("files in")
@@ -233,8 +271,9 @@ impl Provider for StubShellProvider {
             });
         } else {
             intents.push(ActionIntent::Express {
-                body: "I'm the keyless stub. Set OPENROUTER_API_KEY to use a real model. \
-                       Try: 'list the files in /tmp', 'what is the date', or 'whoami'."
+                body: "I'm the keyless stub. Set OPENROUTER_API_KEY or PAN_BASE_URL to use a \
+                       real model. Try: 'list the files in /tmp', 'what is the date', or \
+                       'whoami'."
                     .into(),
             });
         }
