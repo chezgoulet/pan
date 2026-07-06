@@ -91,9 +91,17 @@ fn main() {
     }
 
     // --- Provider selection -------------------------------------------------
+    // Real model when a key is present; backend is configurable via PAN_BASE_URL
+    // / PAN_MODEL so dev/testing can target OpenRouter, a local llama.cpp, or a
+    // mock server. Falls back to the deterministic keyless stub otherwise.
     let has_key = std::env::var("OPENROUTER_API_KEY").is_ok();
     let provider: Box<dyn Provider> = if has_key {
-        Box::new(Llm::openrouter_free())
+        let base = std::env::var("PAN_BASE_URL")
+            .unwrap_or_else(|_| pan_core::providers_llm::DEFAULT_BASE_URL.to_string());
+        let model = std::env::var("PAN_MODEL")
+            .unwrap_or_else(|_| pan_core::providers_llm::DEFAULT_MODEL.to_string());
+        let key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+        Box::new(Llm::new(&base, &model, &key))
     } else {
         eprintln!(
             "[pan] no OPENROUTER_API_KEY set — using deterministic stub provider.\n\
