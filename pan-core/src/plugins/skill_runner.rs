@@ -161,9 +161,9 @@ impl SkillRunner {
     pub fn register_with<F>(
         &self,
         registry: &mut crate::registry::CapabilityRegistry,
-        register_handler: F,
+        mut register_handler: F,
     ) where
-        F: Fn(&str, Box<dyn Fn(&Value) -> Result<Value, ExecError> + Send + Sync>),
+        F: FnMut(&str, Box<dyn Fn(&Value) -> Result<Value, ExecError> + Send + Sync>),
     {
         for skill in &self.skills {
             let cap_id = format!("skill.{}", skill.name);

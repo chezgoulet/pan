@@ -285,11 +285,9 @@ mod tests {
     use std::net::TcpListener;
 
     /// Spin up a tiny mock HTTP server that returns a given response body for
-    /// any POST to `/chat/completions`. Returns the local address.
-    fn mock_litellm(body: &'static str) -> (TcpListener, u16) {
+    fn mock_litellm(body: &'static str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let body_c = body; // &'static str is Copy-safe
 
         std::thread::spawn(move || {
             for stream in listener.incoming().take(1) {
@@ -299,15 +297,15 @@ mod tests {
                 let _ = stream.read(&mut buf);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body_c.len(),
-                    body_c
+                    body.len(),
+                    body
                 );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
             }
         });
 
-        (listener, port)
+        port
     }
 
     fn ctx_with_memory() -> Context {
@@ -427,7 +425,7 @@ mod tests {
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
         }"#;
 
-        let (_listener, port) = mock_litellm(response_body);
+        let port = mock_litellm(response_body);
         let p = LiteLlm::new(&format!("http://127.0.0.1:{port}"), "gpt-4o-mini", "");
         let g = Goal {
             id: "g1".into(),
@@ -474,7 +472,7 @@ mod tests {
             "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
         }"#;
 
-        let (_listener, port) = mock_litellm(response_body);
+        let port = mock_litellm(response_body);
         let p = LiteLlm::new(&format!("http://127.0.0.1:{port}"), "gpt-4o-mini", "");
         let g = Goal {
             id: "g2".into(),

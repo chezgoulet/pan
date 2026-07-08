@@ -50,8 +50,8 @@ pub mod prelude {
         CapabilityRegistry, ConflictError, Lifecycle, LifecycleError, Plugin, PluginError,
     };
     pub use crate::schema::{
-        ActionIntent, Capability, Context, Decision, Fragment, Goal, Outcome, Provider, Trigger,
-        Value,
+        ActionIntent, Capability, Context, Decision, Fragment, Goal, Outcome, PersonaId, Provider,
+        SpanContext, Trigger, Value,
     };
 }
 
