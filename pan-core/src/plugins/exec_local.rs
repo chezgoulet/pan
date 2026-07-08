@@ -21,7 +21,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 /// A handler turns capability args into a JSON result value.
-pub type Handler = fn(&Value) -> Result<Value, ExecError>;
+pub type Handler = Box<dyn Fn(&Value) -> Result<Value, ExecError> + Send + Sync>;
 
 pub struct LocalExecutor {
     handlers: Mutex<HashMap<String, Handler>>,
@@ -30,7 +30,7 @@ pub struct LocalExecutor {
 impl Default for LocalExecutor {
     fn default() -> Self {
         let mut handlers: HashMap<String, Handler> = HashMap::new();
-        handlers.insert("cap.shell".to_string(), run_shell as Handler);
+        handlers.insert("cap.shell".to_string(), Box::new(run_shell));
         Self {
             handlers: Mutex::new(handlers),
         }
@@ -43,11 +43,14 @@ impl LocalExecutor {
     }
 
     /// Register a handler for a capability id (overrides built-ins).
-    pub fn register(&self, capability: &str, handler: Handler) {
+    pub fn register<F>(&self, capability: &str, handler: F)
+    where
+        F: Fn(&Value) -> Result<Value, ExecError> + 'static + Send + Sync,
+    {
         self.handlers
             .lock()
             .unwrap()
-            .insert(capability.to_string(), handler);
+            .insert(capability.to_string(), Box::new(handler));
     }
 }
 

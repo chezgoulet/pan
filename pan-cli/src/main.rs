@@ -249,6 +249,7 @@ fn main() {
 
     let loop_ = pan_core::loop_engine::Loop {
         provider: provider.as_ref(),
+        admitter: &pan_core::loop_engine::AdmitAll,
         pipeline: &pipeline,
         events: &stream,
     };
@@ -307,7 +308,10 @@ fn main() {
         seq += 1;
 
         let report = loop_.run_span(
-            &mut pan_core::loop_engine::Once(Some(goal)),
+            &mut pan_core::loop_engine::Once(Some(pan_core::schema::SpanContext {
+                persona: pan_core::schema::PersonaId("user".into()),
+                goal,
+            })),
             &Context::default(),
         );
 

@@ -36,6 +36,7 @@ pub mod providers_litellm;
 pub mod providers_llm;
 pub mod registry;
 pub mod schema;
+pub mod state;
 
 // A small, curated public prelude so downstream plugin crates have one import.
 pub mod prelude {
@@ -62,7 +63,7 @@ mod tests {
     use crate::providers::{behaviortree, llm, rules};
     use crate::registry::CapabilityRegistry;
     use crate::schema::{
-        ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger,
+        ActionIntent, Capability, Context, Decision, Goal, Outcome, PersonaId, Provider, SpanContext, Trigger,
     };
 
     /// THE WAVE 0 EXIT TEST (build manifest):
@@ -110,10 +111,13 @@ mod tests {
 
         // Drive one discrete span.
         let provider = OneInvoke;
-        let lp = Loop { provider: &provider, pipeline: &pipeline, events: &stream };
-        let mut obs = Once(Some(Goal {
-            id: "run-1".into(), revision: 0, objective: "do the thing".into(),
-            trigger: Trigger::Tick { sequence: 1 },
+        let lp = Loop { provider: &provider, admitter: &AdmitAll, pipeline: &pipeline, events: &stream };
+        let mut obs = Once(Some(SpanContext {
+            persona: PersonaId("default".into()),
+            goal: Goal {
+                id: "run-1".into(), revision: 0, objective: "do the thing".into(),
+                trigger: Trigger::Tick { sequence: 1 },
+            },
         }));
         let report = lp.run_span(&mut obs, &Context::default());
 
@@ -193,9 +197,12 @@ mod tests {
             let (stream, guard) = EventStream::spawn(MemorySink::new());
             let pipeline = Pipeline { registry: &reg, governor: &AllowAll,
                 executor: &EchoExecutor, events: &stream };
-            let lp = Loop { provider: p.as_ref(), pipeline: &pipeline, events: &stream };
-            let mut obs = Once(Some(Goal { id: "g".into(), revision: 0, objective: "o".into(),
-                trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } }));
+            let lp = Loop { provider: p.as_ref(), admitter: &AdmitAll, pipeline: &pipeline, events: &stream };
+            let mut obs = Once(Some(SpanContext {
+                persona: PersonaId("default".into()),
+                goal: Goal { id: "g".into(), revision: 0, objective: "o".into(),
+                    trigger: Trigger::Signal { name: "temp".into(), value: 91.0 } },
+            }));
             let report = lp.run_span(&mut obs, &Context::default());
             assert!(report.end.is_some(), "provider {} produced no terminal state", p.id());
             stream.shutdown(guard);

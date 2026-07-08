@@ -402,7 +402,7 @@ mod tests {
         // The EchoExecutor echoes back the args it received.
         // If the pipeline correctly injected the secret, the result should
         // contain the Authorization header.
-        let echoed_args = &result["args"];
+        let echoed_args = &result.result["args"];
         assert_eq!(
             echoed_args["headers"]["Authorization"],
             "Bearer injected-secret",
@@ -440,7 +440,7 @@ mod tests {
             })
             .expect("dispatch must succeed");
 
-        let echoed_args = &result["args"];
+        let echoed_args = &result.result["args"];
         assert_eq!(
             echoed_args["data"], "original",
             "args must pass through unchanged for unregistered capabilities"

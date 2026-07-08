@@ -141,6 +141,16 @@ pub struct Capability {
     pub args_schema: Value,
 }
 
+impl Capability {
+    pub fn new(id: impl Into<String>, summary: impl Into<String>, args_schema: Value) -> Self {
+        Self {
+            id: id.into(),
+            summary: summary.into(),
+            args_schema,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What a provider hands BACK to the core. THE crux type.
 // ---------------------------------------------------------------------------

@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn plugin_id_is_gov_policy() {
         let p = Policy::new();
-        assert_eq!(p.id(), "gov.policy");
+        assert_eq!(Plugin::id(&p), "gov.policy");
     }
 
     // -- Admission flow integration test ---------------------------------

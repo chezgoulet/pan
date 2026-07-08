@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn admission_filter_works_with_loop_span() {
         use crate::events::{EventKind, EventStream, MemorySink};
-        use crate::loop_engine::Loop;
+        use crate::loop_engine::{AdmitAll, Loop};
         use crate::pipeline::{AllowAll, EchoExecutor, Pipeline};
         use crate::registry::CapabilityRegistry;
         use crate::schema::{ActionIntent, Capability, Context, Decision, Outcome, Provider, Value};
@@ -520,7 +520,7 @@ mod tests {
         };
 
         let provider = PingProvider;
-        let lp = Loop { provider: &provider, pipeline: &pipeline, events: &stream };
+        let lp = Loop { provider: &provider, admitter: &AdmitAll, pipeline: &pipeline, events: &stream };
 
         // Wrap in admission filter — source yields 3 goals, only 2 should
         // reach the loop.
