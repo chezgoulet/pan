@@ -126,10 +126,14 @@ impl Plugin for StateFile {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
     fn tmp_path() -> PathBuf {
         let d = std::env::temp_dir();
-        let name = format!("pan_state_test_{}.json", std::process::id());
+        let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!("pan_state_test_{}_{}.json", std::process::id(), n);
         d.join(name)
     }
 
@@ -169,5 +173,38 @@ mod tests {
         let s2 = Arc::clone(&s);
         s.write("a", serde_json::json!(1));
         assert_eq!(s2.read("a").unwrap(), 1);
+    }
+
+    #[test]
+    fn state_slot_trait_persist_flush_and_reload() {
+        // Exercise the full persist → read-back cycle through &dyn StateSlot
+        // so the trait interface is tested, not just the inherent methods.
+        let p = tmp_path();
+        let sf = StateFile::new(p.clone());
+        let slot: &dyn StateSlot = &sf;
+
+        // Write and flush through the trait.
+        slot.write("name", serde_json::json!("Pan"));
+        slot.write("version", serde_json::json!(2));
+        slot.flush().unwrap();
+
+        // In-memory read-back through the trait.
+        assert_eq!(slot.read("name").unwrap(), "Pan");
+        assert_eq!(slot.read("version").unwrap(), 2);
+
+        // A fresh instance should load the persisted data through the trait.
+        let sf2 = StateFile::new(p.clone());
+        let slot2: &dyn StateSlot = &sf2;
+        slot2.load().unwrap();
+
+        assert_eq!(slot2.read("name").unwrap(), "Pan");
+        assert_eq!(slot2.read("version").unwrap(), 2);
+
+        // keys() through the trait.
+        let mut keys = slot2.keys();
+        keys.sort();
+        assert_eq!(keys, vec!["name", "version"]);
+
+        let _ = std::fs::remove_file(&p);
     }
 }
