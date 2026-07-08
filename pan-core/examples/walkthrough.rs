@@ -6,8 +6,8 @@
 //!
 //! Run with: `cargo run --example walkthrough`
 
+use pan_core::loop_engine::{AdmitAll, Once};
 use pan_core::prelude::*;
-use pan_core::providers::{behaviortree, llm, rules};
 
 /// An event sink that prints each event as it arrives, on the consumer thread.
 struct PrintSink {
@@ -22,11 +22,7 @@ impl EventSink for PrintSink {
 fn registry() -> CapabilityRegistry {
     let mut r = CapabilityRegistry::new();
     for id in ["cap.state_write", "npc.move", "alert.raise"] {
-        r.register(Capability {
-            id: id.into(),
-            summary: String::new(),
-            args_schema: serde_json::json!({ "type": "object" }),
-        })
+        r.register(Capability::new(id.to_string(), "", serde_json::json!({ "type": "object" })))
         .expect("unique ids");
     }
     r
@@ -42,12 +38,20 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         executor: &EchoExecutor,
         events: &stream,
     };
-    let lp = Loop { provider, pipeline: &pipeline, events: &stream };
-    let mut obs = Once(Some(Goal {
-        id: "demo".into(),
-        revision: 0,
-        objective: "show the core works".into(),
-        trigger,
+    let lp = Loop {
+        provider,
+        admitter: &AdmitAll,
+        pipeline: &pipeline,
+        events: &stream,
+    };
+    let mut obs = Once(Some(SpanContext {
+        persona: PersonaId("demo".into()),
+        goal: Goal {
+            id: "demo".into(),
+            revision: 0,
+            objective: "show the core works".into(),
+            trigger,
+        },
     }));
     let report = lp.run_span(&mut obs, &Context::default());
     stream.shutdown(guard);
@@ -63,19 +67,19 @@ fn main() {
 
     drive(
         "LLM",
-        &llm::LlmProvider { model: "demo".into() },
+        &pan_core::providers::llm::LlmProvider { model: "demo".into() },
         Trigger::Utterance { from: "user".into(), content: "hello".into() },
     );
 
     drive(
         "BehaviorTree",
-        &behaviortree::BehaviorTreeProvider {
+        &pan_core::providers::behaviortree::BehaviorTreeProvider {
             root: vec![
-                behaviortree::Node::Action {
+                pan_core::providers::behaviortree::Node::Action {
                     capability: "npc.move".into(),
                     args: serde_json::json!({ "to": "door" }),
                 },
-                behaviortree::Node::Succeed,
+                pan_core::providers::behaviortree::Node::Succeed,
             ],
         },
         Trigger::Tick { sequence: 1 },
@@ -83,10 +87,17 @@ fn main() {
 
     drive(
         "Rules",
-        &rules::RulesProvider {
-            rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
-                then_invoke: ("alert.raise".into(), serde_json::json!({ "level": "high" })),
+        &pan_core::providers::rules::RulesProvider {
+            rules: vec![pan_core::providers::rules::Rule {
+                when: pan_core::providers::rules::Condition::SignalThreshold {
+                    name: "temp".into(),
+                    op: pan_core::providers::rules::ThresholdOp::Gt,
+                    value: 80.0,
+                },
+                then: pan_core::providers::rules::Action::Invoke {
+                    capability: "alert.raise".into(),
+                    args: serde_json::json!({ "level": "high" }),
+                },
             }],
         },
         Trigger::Signal { name: "temp".into(), value: 91.0 },

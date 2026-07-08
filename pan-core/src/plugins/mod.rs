@@ -1,18 +1,27 @@
-//! # Wave 1 plugins — the walking skeleton.
+//! # Wave 1–5 plugins.
 //!
-//! These are the smallest plugins that make Pan *do something real* end to end
-//! (manifest Wave 1, exit test: type a command → model emits `Invoke(cap.shell)`
-//! → runs → reply printed → visible in logs). None require an external API key;
-//! `cap.shell` + `exec.local` + `channel.cli` + `state.memory` + `obs.logging` +
-//! `gov.allow` reach a runnable agent with the stub provider, and a real model
-//! once `provider.llm` is wired in.
-//!
-//! Each plugin implements one of the core slots:
-//! - `Governor` (`gov.allow`) — the trivial always-allow govern stage.
-//! - `Executor` (`exec.local`) — performs `cap.shell` (and any other) in-process.
-//! - `Plugin` (`state.memory`, `obs.logging`) — lifecycle + observability.
+//! Wave 1 plugins form the walking skeleton — exec.local, gov.allow, state.memory,
+//! obs.logging. Wave 2+ add capabilities (cap.fs, cap.http, cap.mcp), governance
+//! (gov.policy, gov.secrets), durable state (state.file), scheduling (sched.cron,
+//! sched.eventbus), skill execution (skill.runner), memory (memory.vector),
+//! sandboxed execution (exec.docker), context assembly (context.template,
+//! context.history), and admission filtering (obs.admission).
 
+pub mod cap_fs;
+pub mod cap_http;
+pub mod cap_mcp;
+pub mod context_history;
+pub mod context_template;
+pub mod exec_docker;
 pub mod exec_local;
 pub mod gov_allow;
+pub mod gov_policy;
+pub mod gov_secrets;
+pub mod memory_vector;
+pub mod obs_admission;
 pub mod obs_logging;
+pub mod sched_cron;
+pub mod sched_eventbus;
+pub mod skill_runner;
+pub mod state_file;
 pub mod state_memory;

@@ -111,9 +111,39 @@ pub mod rules {
     use super::*;
     use crate::schema::Provider;
 
+    /// A condition that, when true, triggers the corresponding action.
+    #[derive(Debug, Clone)]
+    pub enum Condition {
+        /// Fires when a `Signal` trigger exceeds a threshold.
+        SignalThreshold {
+            name: String,
+            op: ThresholdOp,
+            value: f64,
+        },
+    }
+
+    /// Comparison operator for threshold conditions.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum ThresholdOp {
+        Gt,
+        Lt,
+        Eq,
+        Gte,
+        Lte,
+    }
+
+    /// Action to perform when a rule's condition is met.
+    #[derive(Debug, Clone)]
+    pub enum Action {
+        Invoke {
+            capability: String,
+            args: Value,
+        },
+    }
+
     pub struct Rule {
-        pub when_signal_over: (String, f64), // (signal name, threshold)
-        pub then_invoke: (String, Value),    // (capability id, args)
+        pub when: Condition,
+        pub then: Action,
     }
 
     pub struct RulesProvider {
@@ -124,19 +154,36 @@ pub mod rules {
         fn id(&self) -> &str { "provider.rules" }
 
         fn decide(&self, goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
-            if let Trigger::Signal { name, value } = &goal.trigger {
-                for r in &self.rules {
-                    if &r.when_signal_over.0 == name && *value > r.when_signal_over.1 {
-                        return Decision {
-                            intents: vec![
-                                ActionIntent::Invoke {
-                                    capability: r.then_invoke.0.clone(),
-                                    args: r.then_invoke.1.clone(),
-                                    correlation: None,
-                                },
-                                ActionIntent::Conclude { outcome: Outcome::Achieved },
-                            ],
-                        };
+            for rule in &self.rules {
+                if let Trigger::Signal { name, value } = &goal.trigger {
+                    let matches = match &rule.when {
+                        Condition::SignalThreshold { name: n, op, value: v } => {
+                            if name != n { false } else {
+                                match op {
+                                    ThresholdOp::Gt => *value > *v,
+                                    ThresholdOp::Lt => *value < *v,
+                                    ThresholdOp::Eq => (*value - *v).abs() < f64::EPSILON,
+                                    ThresholdOp::Gte => *value >= *v,
+                                    ThresholdOp::Lte => *value <= *v,
+                                }
+                            }
+                        }
+                    };
+                    if matches {
+                        match &rule.then {
+                            Action::Invoke { capability, args } => {
+                                return Decision {
+                                    intents: vec![
+                                        ActionIntent::Invoke {
+                                            capability: capability.clone(),
+                                            args: args.clone(),
+                                            correlation: None,
+                                        },
+                                        ActionIntent::Conclude { outcome: Outcome::Achieved },
+                                    ],
+                                };
+                            }
+                        }
                     }
                 }
             }
@@ -190,10 +237,18 @@ mod tests {
 
     #[test]
     fn rules_invoke_is_the_same_type_as_a_tool_call() {
+        use crate::schema::Provider;
         let p = rules::RulesProvider {
             rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
-                then_invoke: ("alert.raise".into(), serde_json::json!({"level":"high"})),
+                when: rules::Condition::SignalThreshold {
+                    name: "temp".into(),
+                    op: rules::ThresholdOp::Gt,
+                    value: 80.0,
+                },
+                then: rules::Action::Invoke {
+                    capability: "alert.raise".into(),
+                    args: serde_json::json!({"level":"high"}),
+                },
             }],
         };
         let g = Goal { id: "g3".into(), revision: 0, objective: "watch temp".into(),

@@ -21,6 +21,34 @@ use serde::{Deserialize, Serialize};
 pub type Value = serde_json::Value;
 
 // ---------------------------------------------------------------------------
+// Persona identity — used by the admission filter's per-persona state tracking.
+// ---------------------------------------------------------------------------
+
+/// Newtype for persona identity. A `SpanContext` carries a `PersonaId` so the
+/// loop and its plugins (notably the heartbeat admission filter) can distinguish
+/// which persona a goal belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub struct PersonaId(pub String);
+
+impl PersonaId {
+    /// View the persona identifier as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A goal scoped to a persona — the unit of observation submitted to the loop.
+///
+/// The admission filter evaluates state changes per `PersonaId` and uses the
+/// `goal` to check whether anything meaningful has changed since the last
+/// admitted observation for that persona.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpanContext {
+    pub persona: PersonaId,
+    pub goal: Goal,
+}
+
+// ---------------------------------------------------------------------------
 // What the core hands TO a provider.
 // ---------------------------------------------------------------------------
 
@@ -111,6 +139,16 @@ pub struct Capability {
     /// the pipeline enforces it regardless of which provider produced the call,
     /// so a hallucinated-argument LLM and a misconfigured BT fail identically.
     pub args_schema: Value,
+}
+
+impl Capability {
+    pub fn new(id: impl Into<String>, summary: impl Into<String>, args_schema: Value) -> Self {
+        Self {
+            id: id.into(),
+            summary: summary.into(),
+            args_schema,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
