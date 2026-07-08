@@ -21,15 +21,18 @@ from boot, and the health endpoint that proves it breathes. Nothing here is a pl
 this is what Wave 1 plugs into. Until this compiles and plugind can load a Wasm plugin
 and the health endpoint reports green, do not start Wave 1.
 
-- [ ] `Goal` / `ActionIntent` / `Context` / `Capability` types — three-variant intent
+- [x] `Goal` / `ActionIntent` / `Context` / `Capability` types — three-variant intent
       (`Invoke` / `Express` / `Conclude`), `Goal` carries `id` + `revision` for supersession.
-- [ ] The dispatch pipeline: `resolve → validate → govern → execute → record` as typed
+      (`pan-core/src/schema.rs`)
+- [x] The dispatch pipeline: `resolve → validate → govern → execute → record` as typed
       stages where the unsafe path cannot be constructed. **This is the heart — get it right.**
-- [ ] The loop: `observe → decide → enact → commit`, stream-driven (consumes an observation
+      (`pan-core/src/pipeline.rs`)
+- [x] The loop: `observe → decide → enact → commit`, stream-driven (consumes an observation
       stream; a "run" is a span). The discrete case is the degenerate single-observation span.
-- [ ] The event stream: ordered typed events, **emit-to-channel / process-off-thread** from
+      (`pan-core/src/loop_engine.rs`)
+- [x] The event stream: ordered typed events, **emit-to-channel / process-off-thread** from
       day one (cheap struct onto a queue; consumer does serialization/persistence). Retrofitting
-      this later is painful.
+      this later is painful. (`pan-core/src/events.rs`)
 - [ ] Config system: TOML with `[include]` support + environment variable override (#56).
       **Needed by everything** — wire it before the first plugin so nothing hardcodes paths.
 - [ ] Health/observability: `/health` endpoint, uptime tracking, basic metrics (#58).
@@ -57,19 +60,24 @@ a model decides, a local tool runs, you see a reply. This is the moment Pan beco
 Quickstart (#59) makes this reproducible for any newcomer, and the error model (#64) ensures
 the first network-calling plugin fails gracefully, not silently.
 
-- [x] `provider.llm` — generic OpenAI-compatible provider (backend-agnostic; OpenRouter free tier default for dev/testing). Supersedes the original `provider.llm.anthropic` (#9) — see `pan-core/src/providers_llm.rs`.
-- [x] `cap.registry` — capabilities register here; pipeline `resolve` reads from it. (Core `CapabilityRegistry`, exercised by the CLI.)
-- [x] `gov.allow` — trivial always-allow, so the `govern` stage runs. Replaced in Wave 4. (`pan-core/src/plugins/gov_allow.rs`)
-- [x] `exec.local` — in-process execution so `Invoke` does real work. (`pan-core/src/plugins/exec_local.rs`)
-- [x] `cap.shell` — first actual verb (run a command). Proves the whole pipeline. (Registered by the CLI; runs via `exec.local`.)
-- [x] `obs.logging` — structured logs on observation hooks. You are blind without this. (`pan-core/src/plugins/obs_logging.rs` + `LogSink` behind the event stream.)
+- [x] `provider.llm` — generic OpenAI-compatible provider (backend-agnostic; OpenRouter free
+      tier default for dev/testing). Supersedes `provider.llm.anthropic` (#9).
+      (`pan-core/src/providers_llm.rs`)
+- [x] `cap.registry` — capabilities register here; pipeline `resolve` reads from it.
+      (Core `CapabilityRegistry`, exercised by the CLI.)
+- [x] `gov.allow` — trivial always-allow, so the `govern` stage runs. Replaced in Wave 4.
+      (`pan-core/src/plugins/gov_allow.rs`)
+- [x] `exec.local` — in-process execution so `Invoke` does real work.
+      (`pan-core/src/plugins/exec_local.rs`)
+- [x] `cap.shell` — first actual verb (run a command). Proves the whole pipeline.
+      (Registered by the CLI; runs via `exec.local`.)
+- [x] `obs.logging` — structured logs on observation hooks. You are blind without this.
+      (`pan-core/src/plugins/obs_logging.rs` + `LogSink` behind the event stream.)
 - [x] `channel.cli` — stdin/stdout. The simplest possible human interface. (`pan-cli/` binary.)
-- [x] `state.memory` — in-process, non-persistent state so `observe`/`commit` have a slot. (`pan-core/src/plugins/state_memory.rs`)
+- [x] `state.memory` — in-process, non-persistent state so `observe`/`commit` have a slot.
+      (`pan-core/src/plugins/state_memory.rs`)
 - [ ] Quickstart: installation, configuration, first conversation guide (#59). Moved from
-      Wave 6 — the best integration test is a human running Pan.
-- [ ] Error model: typed `PluginError` taxonomy, retry semantics, backoff strategy,
-      dead-letter queue (#64). Moved from deferred — plugins make network calls from the
-      first real provider.
+      Wave 2 per sequencing change — stop-gap doc before formal docs.
 
 **Exit test:** in a terminal, "list the files in /tmp" → model emits `Invoke(cap.shell, …)` →
 runs → reply printed → action visible in logs. **You now have a usable agent.**
@@ -82,16 +90,21 @@ Turns the toy into something you'd actually leave running. Two high-leverage mov
 `cap.mcp` (inherits the entire existing MCP tool ecosystem for one plugin) and `state.file`
 (state survives a restart).
 
-- [ ] `state.file` — persist state/soul to disk. Settle the §13.2 concurrency stance here
-      (single-writer to start is fine; document it).
-- [ ] `cap.fs` — file read/write as a governed capability.
-- [ ] `cap.http` — outbound web requests.
-- [ ] `cap.mcp` — **bridge to any MCP server. Highest-leverage plugin in the whole manifest** —
-      one plugin, and every existing MCP tool becomes available.
-- [ ] `cap.state_write` — the unified soul/state-write capability (the `Mutate`-folds-into-`Invoke`
+- [x] `state.file` — persist state/soul to disk. Settle the §13.2 concurrency stance here
+      (single-writer to start is fine; document it). (`pan-core/src/plugins/state_file.rs`)
+- [x] `cap.fs` — file read/write as a governed capability. (`pan-core/src/plugins/cap_fs.rs`)
+- [x] `cap.http` — outbound web requests. (`pan-core/src/plugins/cap_http.rs`)
+- [x] `cap.mcp` — **bridge to any MCP server. Highest-leverage plugin in the whole manifest** —
+      one plugin, and every existing MCP tool becomes available. stdio transport; spawn →
+      initialize → tools/list → per-tool `cap.mcp.<name>` capability + handler.
+      (`pan-core/src/plugins/cap_mcp.rs`; CLI wires it via `PAN_MCP_CMD`.)
+- [x] `cap.state_write` — the unified soul/state-write capability (the `Mutate`-folds-into-`Invoke`
       decision made concrete). State changes are now governed like any other effect.
+      (Registered in the CLI; routes to `state.file` via the executor handler.)
 - [ ] `context.template` — prompt assembly from templates for the LLM provider.
+      (`pan-core/src/plugins/context_template.rs` — scaffold exists)
 - [ ] `context.history` — conversation history with pruning.
+      (`pan-core/src/plugins/context_history.rs` — scaffold exists)
 
 **Exit test:** restart Pan and it remembers the prior conversation; it can fetch a URL and
 call at least one MCP-provided tool.
@@ -107,13 +120,15 @@ LLM-only. If it can't emit the same `ActionIntent`s cleanly, something leaked; f
 before more plugins assume LLM shape.
 
 - [ ] `memory.vector` — thin client to a vector store (the Ragamuffin slot).
+      (`pan-core/src/plugins/memory_vector.rs` — scaffold exists)
 - [ ] `context.memory` — holds the read-only `MemoryQuery` handle, injects retrieved facts.
 - [ ] `memory.summarizer` — condense old context into durable summaries.
 - [ ] `context.compaction` — compress when the window fills.
-- [ ] `provider.litellm` — one plugin, many models. Becomes your default provider (model-swap
-      freedom is part of the self-hosted appeal).
+- [x] `provider.litellm` — one plugin, many models. Becomes your default provider (model-swap
+      freedom is part of the self-hosted appeal). (`pan-core/src/providers_litellm.rs`)
 - [ ] `provider.behaviortree` — **the honesty check.** No model. Must emit identical intents.
-- [ ] `provider.rules` — second non-LLM provider; also the seed of the heartbeat-filter logic.
+- [x] `provider.rules` — second non-LLM provider; also the seed of the heartbeat-filter logic.
+      (`pan-core/src/providers.rs` — `rules` module with `Condition`/`Action` types)
 
 **Exit test:** Pan recalls a fact from a conversation days ago; the behavior-tree provider
 drives a trivial decision through the *same* pipeline with zero LLM involvement.
@@ -125,20 +140,19 @@ drives a trivial decision through the *same* pipeline with zero LLM involvement.
 Replace `gov.allow` with real gates. This is where a Pan assistant becomes meaningfully
 *safer* than OpenClaw rather than just different — sandboxed execution, non-bypassable
 approval, durable audit, secret isolation. Do this **before** exposing Pan over chat (Wave 5),
-because the moment it's reachable by DM, inbound is untrusted. The security platform (#63)
-establishes baseline contract enforcement (Mode 1) as the default barrier.
+because the moment it's reachable by DM, inbound is untrusted.
 
-- [ ] Security platform: Mode 1 (contract enforcement) baked into the plugin pipeline,
-      with Modes 2 (sandboxed) and 3 (hardened) as deferred targets (#63). The plugin
-      ecosystem needs baseline security before channels open.
 - [ ] `gov.policy` — allow / deny / require-approval rules. Replaces `gov.allow`.
+      (`pan-core/src/plugins/gov_policy.rs` — scaffold exists)
 - [ ] `gov.approval` — human-in-the-loop confirmation for dangerous invokes.
-- [ ] `gov.secrets` — resolve credentials without exposing them to plugins.
+- [~] `gov.secrets` — credential isolation. (`pan-core/src/plugins/gov_secrets.rs` — scaffold
+      with credential store, enrichment hook)
 - [ ] `gov.audit` — durable record of every governed effect.
 - [ ] `gov.ratelimit` — token/request/action ceilings.
 - [ ] `gov.idempotency` — dedupe repeated effects.
-- [ ] `exec.docker` (or `exec.ssh`) — **sandboxed** execution, replacing bare `exec.local`
+- [~] `exec.docker` — **sandboxed** execution, replacing bare `exec.local`
       for anything touching real tools. Directly closes the credential-isolation gap.
+      (`pan-core/src/plugins/exec_docker.rs` — scaffold with Docker command builder)
 
 **Exit test:** a dangerous `Invoke` (e.g. `cap.shell` doing an `rm`) is gated by approval;
 a denied action is refused and audited; tools run inside the sandbox, not on the host.
@@ -148,24 +162,25 @@ a denied action is refused and audited; tools run inside the sandbox, not on the
 ## Wave 5 — The Hermes/OpenClaw replacement (home assistant)
 
 Everything assistant-specific. Most of what's needed already exists from Waves 1–4; this wave
-is really just **channels + persona + heartbeat-admission + skills + management UI**. This is
-your target deployment. The management UI (#61) deploys alongside channels since the admin
-HTTP server shares `channel.http`'s infrastructure.
+is really just **channels + persona + heartbeat-admission + skills**. This is your target
+deployment.
 
 - [ ] `channel.telegram` (and/or `channel.discord`, `channel.slack`) — live in your chat apps.
 - [ ] `channel.http` — webhook/REST ingress for everything else.
-- [ ] Management UI: admin HTTP server, plugin list/enable/disable endpoints,
-      minimal web UI (#61). Shares infra with `channel.http`.
 - [ ] Pairing / allowlist rules in `gov.policy` — inbound DMs are untrusted; only paired
       senders reach the agent. (The OpenClaw-was-weak-here fix, now structural.)
 - [ ] soul/persona plugin + `context.template` persona injection — the "make it yours"
       onboarding. Mostly user-edited markdown (Ring 2), not Rust.
 - [ ] `sched.cron` + `sched.eventbus` — the heartbeat substrate.
-- [ ] **admission/segmentation plugin in the `observe` phase** — the heartbeat filter: a tick
+      (`pan-core/src/plugins/sched_cron.rs`, `sched_eventbus.rs` — scaffold exists)
+- [~] **admission/segmentation plugin in the `observe` phase** — the heartbeat filter: a tick
       is a *cheap observation that usually gets dropped* and only escalates to a full LLM
       decision when something changed. The fix for "wakes the whole agent every 30 min."
-- [ ] `skill.runner` — execute agentskills.io-format skills (polyglot). Your low-barrier
+      (`pan-core/src/plugins/obs_admission.rs` — scaffold with `AdmitAll` default, per-persona
+      tracking, heartbeat state machine)
+- [~] `skill.runner` — execute agentskills.io-format skills (polyglot). Your low-barrier
       everyday-automation surface, and inherits skills written for the incumbents.
+      (`pan-core/src/plugins/skill_runner.rs` — scaffold with parser, frontmatter, runner)
 - [ ] `cap.distribution` — scope which capabilities are live for this deployment.
 
 **Exit test:** message Pan from your phone via Telegram; it answers in persona, remembers you,
@@ -184,8 +199,6 @@ gives you a profile. Then fix only what the profile flags, in this likely order:
 - [ ] Compile JSON schemas at provision time if `validate` shows up hot.
 - [ ] Confirm off-thread eventing holds under a tight non-LLM loop.
 - [ ] Tune memory retrieval / compaction thresholds against real conversation volume.
-- [ ] Security platform Modes 2+3 (#63) — sandboxed and hardened tiers, building on the
-      Mode 1 contract enforcement from Wave 4.
 
 Optional, demand-driven:
 
@@ -193,36 +206,32 @@ Optional, demand-driven:
 - [ ] `orch.subagent` / `orch.delegate` — multi-agent specialists, only if wanted.
 - [ ] `obs.metrics` / `obs.tracing` — when you want dashboards.
 - [ ] additional channels / capabilities as needs arise.
-- [ ] Docker image, SystemD unit, APT repo (#57) — deployment packaging.
 
 ---
 
 ## At-a-glance dependency order
 
 ```
-Wave 0  core+substrate  .. pipeline · loop · events · config · health · plugind
-                            · wasm-abi · abandon-path
-Wave 1  CLI agent ....... provider.llm · cap.registry · gov.allow · exec.local
+Wave 0  core ............... pipeline · loop · events · handles · lifecycle
+Wave 1  CLI agent ......... provider.llm · cap.registry · gov.allow · exec.local
                             · cap.shell · obs.logging · channel.cli · state.memory
-                            · quickstart (#59) · error-model (#64)
-Wave 2  persistent+tools  state.file · cap.fs · cap.http · cap.mcp · cap.state_write
+Wave 2  persistent+tools .. state.file · cap.fs · cap.http · cap.mcp · cap.state_write
                             · context.template · context.history
-Wave 3  memory+honesty .. memory.vector · context.memory · memory.summarizer
+Wave 3  memory+honesty .... memory.vector · context.memory · memory.summarizer
                             · context.compaction · provider.litellm
                             · provider.behaviortree · provider.rules
-Wave 4  governance ....... security-mode-1 · gov.policy · gov.approval · gov.secrets
-                            · gov.audit · gov.ratelimit · gov.idempotency · exec.docker
-Wave 5  ASSISTANT ........ channel.telegram/discord/slack · channel.http · mgmt-ui
-                            · pairing · persona · sched.cron · sched.eventbus
-                            · admission-filter · skill.runner · cap.distribution
-Wave 6  optimize ......... benchmarks · schema compile · tuning · security-modes-2+3
-                            · optional extras · Deployment packaging
+Wave 4  governance ........ gov.policy · gov.approval · gov.secrets · gov.audit
+                            · gov.ratelimit · gov.idempotency · exec.docker
+Wave 5  ASSISTANT ......... channel.telegram/discord/slack · channel.http · pairing
+                            · persona · sched.cron · sched.eventbus · admission-filter
+                            · skill.runner · cap.distribution
+Wave 6  optimize .......... benchmarks · schema compile · tuning · optional extras
 ```
 
 ## The thesis, restated as a checklist fact
 
-The Hermes/OpenClaw replacement (Wave 5) adds only ~6 genuinely assistant-specific items
-(channels, management UI, persona, heartbeat-admission, skill-runner, distribution) on top
-of a baseline (Waves 1–4) you would build for *any* deployment. The incumbent-equivalent is a
-**plugin manifest plus six plugins**, not a special build. If that holds true when you reach
-Wave 5, the core/plugin boundary was drawn correctly.
+The Hermes/OpenClaw replacement (Wave 5) adds only ~5 genuinely assistant-specific plugins
+(channels, persona, heartbeat-admission, skill-runner, distribution) on top of a baseline
+(Waves 1–4) you would build for *any* deployment. The incumbent-equivalent is a **plugin
+manifest plus five plugins**, not a special build. If that holds true when you reach Wave 5,
+the core/plugin boundary was drawn correctly.
