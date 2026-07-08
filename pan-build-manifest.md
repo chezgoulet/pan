@@ -14,11 +14,12 @@ works end-to-end. Do not optimize until Wave 6.
 
 ---
 
-## Wave 0 — Core (no plugins; the thing plugins plug into)
+## Wave 0 — Core + Plugin Substrate
 
-The three core pieces from the settled design, plus the plugin substrate. Nothing here is
-a plugin; this is what Wave 1 plugs into. Until this compiles and a trivial hand-written
-test can drive one fake provider through one fake capability, do not start Wave 1.
+The four core pieces from the settled design, plus the plugin host, the config it needs
+from boot, and the health endpoint that proves it breathes. Nothing here is a plugin;
+this is what Wave 1 plugs into. Until this compiles and plugind can load a Wasm plugin
+and the health endpoint reports green, do not start Wave 1.
 
 - [ ] `Goal` / `ActionIntent` / `Context` / `Capability` types — three-variant intent
       (`Invoke` / `Express` / `Conclude`), `Goal` carries `id` + `revision` for supersession.
@@ -29,16 +30,23 @@ test can drive one fake provider through one fake capability, do not start Wave 
 - [ ] The event stream: ordered typed events, **emit-to-channel / process-off-thread** from
       day one (cheap struct onto a queue; consumer does serialization/persistence). Retrofitting
       this later is painful.
-- [ ] Plugin lifecycle: `Register → Provision → Validate → Run → Cleanup` (Caddy-style),
-      hierarchical IDs, explicit conflict = provision-time error (never last-wins).
-- [ ] The capability-handle wiring registry: trait-object handles granted at provision.
-      **The one piece flagged as needing real code to confirm ergonomics** — build the smallest
-      version that injects one read-only handle and refuses at compile time to let it write.
+- [ ] Config system: TOML with `[include]` support + environment variable override (#56).
+      **Needed by everything** — wire it before the first plugin so nothing hardcodes paths.
+- [ ] Health/observability: `/health` endpoint, uptime tracking, basic metrics (#58).
+      A development tool from day one — Pan breathes from boot.
+- [ ] `pan.core.plugind` — plugin manager with Wasm loading, capability negotiation,
+      live registry (#60). Absorbs the original plugin-lifecycle work (#6, now closed):
+      `Register → Provision → Validate → Run → Cleanup` (Caddy-style), hierarchical IDs,
+      explicit conflict = provision-time error (never last-wins).
+- [ ] Wasm plugin ABI contract, SDK templates, and sandbox containment test (#62).
+      Plugin loading is defined by the Wasm boundary from day one — every plugin crosses
+      it, so the boundary shapes everything.
 - [ ] The abandon-path: cleanly discard an in-flight `Decision` whose goal was superseded.
-      Shared mechanism with the (future, deferred) §14 safety veto — build once.
+      Shared mechanism with the (future) §14 safety veto — build once.
 
-**Exit test:** a hand-written integration test drives a stub provider that emits one `Invoke`,
-through an always-allow govern stage, to a stub capability, and sees the event on the stream.
+**Exit test:** plugind loads a Wasm plugin, provisions it with one read-only capability
+handle, resolves a trivial intent through the pipeline, and the `/health` endpoint reports
+the plugin's status as healthy.
 
 ---
 
@@ -46,6 +54,8 @@ through an always-allow govern stage, to a stub capability, and sees the event o
 
 The smallest plugin set that makes Pan do something real. End state: type into a terminal,
 a model decides, a local tool runs, you see a reply. This is the moment Pan becomes a tool.
+Quickstart (#59) makes this reproducible for any newcomer, and the error model (#64) ensures
+the first network-calling plugin fails gracefully, not silently.
 
 - [x] `provider.llm` — generic OpenAI-compatible provider (backend-agnostic; OpenRouter free tier default for dev/testing). Supersedes the original `provider.llm.anthropic` (#9) — see `pan-core/src/providers_llm.rs`.
 - [x] `cap.registry` — capabilities register here; pipeline `resolve` reads from it. (Core `CapabilityRegistry`, exercised by the CLI.)
@@ -55,6 +65,11 @@ a model decides, a local tool runs, you see a reply. This is the moment Pan beco
 - [x] `obs.logging` — structured logs on observation hooks. You are blind without this. (`pan-core/src/plugins/obs_logging.rs` + `LogSink` behind the event stream.)
 - [x] `channel.cli` — stdin/stdout. The simplest possible human interface. (`pan-cli/` binary.)
 - [x] `state.memory` — in-process, non-persistent state so `observe`/`commit` have a slot. (`pan-core/src/plugins/state_memory.rs`)
+- [ ] Quickstart: installation, configuration, first conversation guide (#59). Moved from
+      Wave 6 — the best integration test is a human running Pan.
+- [ ] Error model: typed `PluginError` taxonomy, retry semantics, backoff strategy,
+      dead-letter queue (#64). Moved from deferred — plugins make network calls from the
+      first real provider.
 
 **Exit test:** in a terminal, "list the files in /tmp" → model emits `Invoke(cap.shell, …)` →
 runs → reply printed → action visible in logs. **You now have a usable agent.**
@@ -110,8 +125,12 @@ drives a trivial decision through the *same* pipeline with zero LLM involvement.
 Replace `gov.allow` with real gates. This is where a Pan assistant becomes meaningfully
 *safer* than OpenClaw rather than just different — sandboxed execution, non-bypassable
 approval, durable audit, secret isolation. Do this **before** exposing Pan over chat (Wave 5),
-because the moment it's reachable by DM, inbound is untrusted.
+because the moment it's reachable by DM, inbound is untrusted. The security platform (#63)
+establishes baseline contract enforcement (Mode 1) as the default barrier.
 
+- [ ] Security platform: Mode 1 (contract enforcement) baked into the plugin pipeline,
+      with Modes 2 (sandboxed) and 3 (hardened) as deferred targets (#63). The plugin
+      ecosystem needs baseline security before channels open.
 - [ ] `gov.policy` — allow / deny / require-approval rules. Replaces `gov.allow`.
 - [ ] `gov.approval` — human-in-the-loop confirmation for dangerous invokes.
 - [ ] `gov.secrets` — resolve credentials without exposing them to plugins.
@@ -129,11 +148,14 @@ a denied action is refused and audited; tools run inside the sandbox, not on the
 ## Wave 5 — The Hermes/OpenClaw replacement (home assistant)
 
 Everything assistant-specific. Most of what's needed already exists from Waves 1–4; this wave
-is really just **channels + persona + heartbeat-admission + skills**. This is your target
-deployment.
+is really just **channels + persona + heartbeat-admission + skills + management UI**. This is
+your target deployment. The management UI (#61) deploys alongside channels since the admin
+HTTP server shares `channel.http`'s infrastructure.
 
 - [ ] `channel.telegram` (and/or `channel.discord`, `channel.slack`) — live in your chat apps.
 - [ ] `channel.http` — webhook/REST ingress for everything else.
+- [ ] Management UI: admin HTTP server, plugin list/enable/disable endpoints,
+      minimal web UI (#61). Shares infra with `channel.http`.
 - [ ] Pairing / allowlist rules in `gov.policy` — inbound DMs are untrusted; only paired
       senders reach the agent. (The OpenClaw-was-weak-here fix, now structural.)
 - [ ] soul/persona plugin + `context.template` persona injection — the "make it yours"
@@ -162,6 +184,8 @@ gives you a profile. Then fix only what the profile flags, in this likely order:
 - [ ] Compile JSON schemas at provision time if `validate` shows up hot.
 - [ ] Confirm off-thread eventing holds under a tight non-LLM loop.
 - [ ] Tune memory retrieval / compaction thresholds against real conversation volume.
+- [ ] Security platform Modes 2+3 (#63) — sandboxed and hardened tiers, building on the
+      Mode 1 contract enforcement from Wave 4.
 
 Optional, demand-driven:
 
@@ -169,32 +193,36 @@ Optional, demand-driven:
 - [ ] `orch.subagent` / `orch.delegate` — multi-agent specialists, only if wanted.
 - [ ] `obs.metrics` / `obs.tracing` — when you want dashboards.
 - [ ] additional channels / capabilities as needs arise.
+- [ ] Docker image, SystemD unit, APT repo (#57) — deployment packaging.
 
 ---
 
 ## At-a-glance dependency order
 
 ```
-Wave 0  core ............... pipeline · loop · events · handles · lifecycle
-Wave 1  CLI agent ......... provider.anthropic · cap.registry · gov.allow · exec.local
+Wave 0  core+substrate  .. pipeline · loop · events · config · health · plugind
+                            · wasm-abi · abandon-path
+Wave 1  CLI agent ....... provider.llm · cap.registry · gov.allow · exec.local
                             · cap.shell · obs.logging · channel.cli · state.memory
-Wave 2  persistent+tools .. state.file · cap.fs · cap.http · cap.mcp · cap.state_write
+                            · quickstart (#59) · error-model (#64)
+Wave 2  persistent+tools  state.file · cap.fs · cap.http · cap.mcp · cap.state_write
                             · context.template · context.history
-Wave 3  memory+honesty .... memory.vector · context.memory · memory.summarizer
+Wave 3  memory+honesty .. memory.vector · context.memory · memory.summarizer
                             · context.compaction · provider.litellm
                             · provider.behaviortree · provider.rules
-Wave 4  governance ........ gov.policy · gov.approval · gov.secrets · gov.audit
-                            · gov.ratelimit · gov.idempotency · exec.docker
-Wave 5  ASSISTANT ......... channel.telegram/discord/slack · channel.http · pairing
-                            · persona · sched.cron · sched.eventbus · admission-filter
-                            · skill.runner · cap.distribution
-Wave 6  optimize .......... benchmarks · schema compile · tuning · optional extras
+Wave 4  governance ....... security-mode-1 · gov.policy · gov.approval · gov.secrets
+                            · gov.audit · gov.ratelimit · gov.idempotency · exec.docker
+Wave 5  ASSISTANT ........ channel.telegram/discord/slack · channel.http · mgmt-ui
+                            · pairing · persona · sched.cron · sched.eventbus
+                            · admission-filter · skill.runner · cap.distribution
+Wave 6  optimize ......... benchmarks · schema compile · tuning · security-modes-2+3
+                            · optional extras · Deployment packaging
 ```
 
 ## The thesis, restated as a checklist fact
 
-The Hermes/OpenClaw replacement (Wave 5) adds only ~5 genuinely assistant-specific plugins
-(channels, persona, heartbeat-admission, skill-runner, distribution) on top of a baseline
-(Waves 1–4) you would build for *any* deployment. The incumbent-equivalent is a **plugin
-manifest plus five plugins**, not a special build. If that holds true when you reach Wave 5,
-the core/plugin boundary was drawn correctly.
+The Hermes/OpenClaw replacement (Wave 5) adds only ~6 genuinely assistant-specific items
+(channels, management UI, persona, heartbeat-admission, skill-runner, distribution) on top
+of a baseline (Waves 1–4) you would build for *any* deployment. The incumbent-equivalent is a
+**plugin manifest plus six plugins**, not a special build. If that holds true when you reach
+Wave 5, the core/plugin boundary was drawn correctly.
