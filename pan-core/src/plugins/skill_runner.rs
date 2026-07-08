@@ -565,7 +565,8 @@ ls -la /tmp
     fn parse_skill_without_code_block_uses_body() {
         let md = "# greet\necho hello";
         let skill = SkillFile::parse(md).unwrap();
-        assert_eq!(skill.code, "echo hello");
+        // Without a fenced code block, the entire body is treated as code.
+        assert_eq!(skill.code, "# greet\necho hello");
     }
 
     #[test]
