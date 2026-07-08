@@ -153,7 +153,10 @@ impl Policy {
         let hex = format!("{:016x}", epoch);
         // Trim admin name to first 4 chars for readability.
         let prefix: String = admin_user.chars().take(4).collect();
-        format!("pair-{}-{}", prefix, &hex[..8])
+        // Use the lower 8 hex chars (least significant bits) which change with
+        // each nanosecond tick, unlike the upper 8 which are stable across
+        // consecutive calls.
+        format!("pair-{}-{}", prefix, &hex[(hex.len() - 8).max(0)..])
     }
 }
 

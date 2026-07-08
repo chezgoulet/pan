@@ -330,12 +330,14 @@ mod tests {
 
     #[test]
     fn third_tick_with_changed_objective_is_admitted() {
-        use std::sync::atomic::{AtomicU8, Ordering};
-        static THREE_CALLS: AtomicU8 = AtomicU8::new(0);
-        struct ThreeTicks;
+        use std::cell::Cell;
+        struct ThreeTicks {
+            n: Cell<u8>,
+        }
         impl Observations for ThreeTicks {
             fn next_goal(&mut self) -> Option<SpanContext> {
-                let n = THREE_CALLS.fetch_add(1, Ordering::SeqCst);
+                let n = self.n.get();
+                self.n.set(n + 1);
                 match n {
                     0 => Some(tick_span("alice", 1, "heartbeat")),
                     1 => Some(tick_span("alice", 2, "heartbeat")),
@@ -345,7 +347,7 @@ mod tests {
             }
         }
 
-        let mut filter = AdmissionFilter::new(ThreeTicks, 60_000);
+        let mut filter = AdmissionFilter::new(ThreeTicks { n: Cell::new(0) }, 60_000);
         // 1st tick admitted
         assert!(filter.next_goal().is_some());
         // 2nd identical tick dropped
@@ -388,12 +390,14 @@ mod tests {
 
     #[test]
     fn different_personas_do_not_interfere() {
-        use std::sync::atomic::{AtomicU8, Ordering};
-        static MP_CALLS: AtomicU8 = AtomicU8::new(0);
-        struct MultiPersona;
+        use std::cell::Cell;
+        struct MultiPersona {
+            n: Cell<u8>,
+        }
         impl Observations for MultiPersona {
             fn next_goal(&mut self) -> Option<SpanContext> {
-                let n = MP_CALLS.fetch_add(1, Ordering::SeqCst);
+                let n = self.n.get();
+                self.n.set(n + 1);
                 match n {
                     0 => Some(tick_span("alice", 1, "heartbeat")),
                     1 => Some(tick_span("bob", 1, "heartbeat")),    // different Persona
@@ -404,7 +408,7 @@ mod tests {
             }
         }
 
-        let mut filter = AdmissionFilter::new(MultiPersona, 60_000);
+        let mut filter = AdmissionFilter::new(MultiPersona { n: Cell::new(0) }, 60_000);
         assert_eq!(filter.next_goal().unwrap().persona.as_str(), "alice", "1st: alice admitted");
         assert_eq!(filter.next_goal().unwrap().persona.as_str(), "bob", "2nd: bob admitted (different persona)");
         assert!(filter.next_goal().is_none(), "3rd: alice's identical tick dropped");
@@ -487,12 +491,14 @@ mod tests {
         }
 
         // A source that yields two ticks, then a signal (always admitted).
-        use std::sync::atomic::{AtomicU8, Ordering};
-        static MIX_CALLS: AtomicU8 = AtomicU8::new(0);
-        struct MixedSource;
+        use std::cell::Cell;
+        struct MixedSource {
+            n: Cell<u8>,
+        }
         impl Observations for MixedSource {
             fn next_goal(&mut self) -> Option<SpanContext> {
-                let n = MIX_CALLS.fetch_add(1, Ordering::SeqCst);
+                let n = self.n.get();
+                self.n.set(n + 1);
                 match n {
                     0 => Some(tick_span("alice", 1, "ping")),
                     1 => Some(tick_span("alice", 2, "ping")),   // identical → dropped
@@ -524,7 +530,7 @@ mod tests {
 
         // Wrap in admission filter — source yields 3 goals, only 2 should
         // reach the loop.
-        let mut filter = AdmissionFilter::new(MixedSource, 60_000);
+        let mut filter = AdmissionFilter::new(MixedSource { n: Cell::new(0) }, 60_000);
         let report = lp.run_span(&mut filter, &Context::default());
 
         // The loop should have run twice: first tick admitted, second tick

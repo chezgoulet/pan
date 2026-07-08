@@ -129,7 +129,7 @@ impl LiteLlm {
         ctx: &Context,
         caps: &[Capability],
     ) -> Decision {
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = format!("{}/v1/chat/completions", self.base_url);
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": self.build_messages(goal, ctx),
