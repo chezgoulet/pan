@@ -56,6 +56,18 @@ pub enum Verdict {
 pub trait Governor: Send + Sync {
     fn id(&self) -> &str;
     fn govern(&self, capability: &str, args: &Value) -> Verdict;
+
+    /// Optionally enrich the args before execution. Called after a successful
+    /// `govern` (Allow) and before `execute`. The returned value, if `Some`,
+    /// replaces the original args. A `None` return means no enrichment (the
+    /// original args pass through unchanged).
+    ///
+    /// This is the hook that `gov.secrets` uses to inject credential values
+    /// without exposing them to the provider: the provider never calls `enrich`,
+    /// only the pipeline does, between govern and execute.
+    fn enrich(&self, _capability: &str, _args: &Value) -> Option<Value> {
+        None
+    }
 }
 
 /// The trivial always-allow governor (manifest Wave 1 `gov.allow`, but needed in
@@ -199,10 +211,17 @@ impl<'a> Pipeline<'a> {
 
     /// Stages 4 & 5 — execute then record. Accepts only a [`Governed`] token, so
     /// it is impossible to call without a passing govern decision. Records
-    /// `Effected` on success.
+    /// `Effected` on success. Before delegation to the executor, calls
+    /// `governor.enrich()` so governors like `gov.secrets` can inject
+    /// credential values without exposing them to the provider.
     pub fn execute(&self, governed: Governed) -> Result<Effected, PipelineError> {
         let cap = governed.request.capability;
-        match self.executor.execute(&cap, &governed.request.args) {
+        // Enrich args after govern, before execute.
+        let args = self
+            .governor
+            .enrich(&cap, &governed.request.args)
+            .unwrap_or(governed.request.args);
+        match self.executor.execute(&cap, &args) {
             Ok(result) => {
                 self.record("execute", &cap, StageStatus::Ok);
                 self.events.emit(EventKind::Effected {

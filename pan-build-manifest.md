@@ -67,14 +67,17 @@ Turns the toy into something you'd actually leave running. Two high-leverage mov
 `cap.mcp` (inherits the entire existing MCP tool ecosystem for one plugin) and `state.file`
 (state survives a restart).
 
-- [ ] `state.file` — persist state/soul to disk. Settle the §13.2 concurrency stance here
-      (single-writer to start is fine; document it).
-- [ ] `cap.fs` — file read/write as a governed capability.
-- [ ] `cap.http` — outbound web requests.
-- [ ] `cap.mcp` — **bridge to any MCP server. Highest-leverage plugin in the whole manifest** —
-      one plugin, and every existing MCP tool becomes available.
-- [ ] `cap.state_write` — the unified soul/state-write capability (the `Mutate`-folds-into-`Invoke`
+- [x] `state.file` — persist state/soul to disk. Settle the §13.2 concurrency stance here
+      (single-writer to start is fine; document it). (`pan-core/src/plugins/state_file.rs`)
+- [x] `cap.fs` — file read/write as a governed capability. (`pan-core/src/plugins/cap_fs.rs`)
+- [x] `cap.http` — outbound web requests. (`pan-core/src/plugins/cap_http.rs`)
+- [x] `cap.mcp` — **bridge to any MCP server. Highest-leverage plugin in the whole manifest** —
+      one plugin, and every existing MCP tool becomes available. stdio transport; spawn →
+      initialize → tools/list → per-tool `cap.mcp.<name>` capability + handler.
+      (`pan-core/src/plugins/cap_mcp.rs`; CLI wires it via `PAN_MCP_CMD`.)
+- [x] `cap.state_write` — the unified soul/state-write capability (the `Mutate`-folds-into-`Invoke`
       decision made concrete). State changes are now governed like any other effect.
+      (Registered in the CLI; routes to `state.file` via the executor handler.)
 - [ ] `context.template` — prompt assembly from templates for the LLM provider.
 - [ ] `context.history` — conversation history with pruning.
 

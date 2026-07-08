@@ -32,6 +32,7 @@ pub mod loop_engine;
 pub mod pipeline;
 pub mod plugins;
 pub mod providers;
+pub mod providers_litellm;
 pub mod providers_llm;
 pub mod registry;
 pub mod schema;
@@ -40,7 +41,7 @@ pub mod schema;
 pub mod prelude {
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
-    pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
+    pub use crate::loop_engine::{AdmitAll, Admitter, Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
     };
@@ -56,7 +57,7 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use crate::events::{EventKind, EventStream, MemorySink};
-    use crate::loop_engine::{Loop, Once, RunEnd};
+    use crate::loop_engine::{AdmitAll, Loop, Once, RunEnd};
     use crate::pipeline::{AllowAll, EchoExecutor, Pipeline};
     use crate::providers::{behaviortree, llm, rules};
     use crate::registry::CapabilityRegistry;
@@ -175,8 +176,15 @@ mod tests {
                 behaviortree::Node::Succeed,
             ]}),
             Box::new(rules::RulesProvider { rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
-                then_invoke: ("alert.raise".into(), serde_json::json!({})),
+                when: rules::Condition::SignalThreshold {
+                    name: "temp".into(),
+                    op: rules::ThresholdOp::Gt,
+                    value: 80.0,
+                },
+                then: rules::Action::Invoke {
+                    capability: "alert.raise".into(),
+                    args: serde_json::json!({}),
+                },
             }]}),
         ];
 

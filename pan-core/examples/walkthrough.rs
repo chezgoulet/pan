@@ -22,11 +22,7 @@ impl EventSink for PrintSink {
 fn registry() -> CapabilityRegistry {
     let mut r = CapabilityRegistry::new();
     for id in ["cap.state_write", "npc.move", "alert.raise"] {
-        r.register(Capability {
-            id: id.into(),
-            summary: String::new(),
-            args_schema: serde_json::json!({ "type": "object" }),
-        })
+        r.register(Capability::new(*id, "", serde_json::json!({ "type": "object" })))
         .expect("unique ids");
     }
     r
@@ -85,8 +81,15 @@ fn main() {
         "Rules",
         &rules::RulesProvider {
             rules: vec![rules::Rule {
-                when_signal_over: ("temp".into(), 80.0),
-                then_invoke: ("alert.raise".into(), serde_json::json!({ "level": "high" })),
+                when: rules::Condition::SignalThreshold {
+                    name: "temp".into(),
+                    op: rules::ThresholdOp::Gt,
+                    value: 80.0,
+                },
+                then: rules::Action::Invoke {
+                    capability: "alert.raise".into(),
+                    args: serde_json::json!({ "level": "high" }),
+                },
             }],
         },
         Trigger::Signal { name: "temp".into(), value: 91.0 },

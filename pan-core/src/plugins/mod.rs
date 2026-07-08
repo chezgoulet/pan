@@ -14,5 +14,8 @@
 
 pub mod exec_local;
 pub mod gov_allow;
+pub mod obs_admission;
 pub mod obs_logging;
+pub mod sched_cron;
+pub mod sched_eventbus;
 pub mod state_memory;

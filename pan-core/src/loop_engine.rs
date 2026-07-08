@@ -19,7 +19,7 @@
 
 use crate::events::{EventKind, EventStream};
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::schema::{ActionIntent, Context, Decision, Goal, Outcome, Provider};
+use crate::schema::{ActionIntent, Context, Decision, Goal, Outcome, Provider, SpanContext};
 
 /// Why a run span ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,30 +51,59 @@ pub struct RunReport {
 /// This is the seam the manifest's "admission ↔ loop handoff for streaming"
 /// open question plugs into — the loop only requires "give me the next goal, or
 /// None when the span is done."
+///
+/// Wave 5: the return type is now [`SpanContext`] (persona + goal) so that
+/// the heartbeat admission filter can track state changes per persona before
+/// goals reach the provider.
 pub trait Observations {
-    /// Return the next goal for this span, or `None` when the stream is done.
-    fn next_goal(&mut self) -> Option<Goal>;
+    /// Return the next span for this run, or `None` when the stream is done.
+    fn next_goal(&mut self) -> Option<SpanContext>;
 
     /// Peek whether a newer revision of `current` has arrived without consuming
     /// the normal stream position. Default: never superseded (discrete case).
     /// A streaming source overrides this to enable mid-decide abandon.
-    fn superseding(&mut self, _current: &Goal) -> Option<Goal> {
+    fn superseding(&mut self, _current: &SpanContext) -> Option<SpanContext> {
         None
     }
 }
 
 /// A single discrete goal — the degenerate one-observation span.
-pub struct Once(pub Option<Goal>);
+pub struct Once(pub Option<SpanContext>);
 impl Observations for Once {
-    fn next_goal(&mut self) -> Option<Goal> {
+    fn next_goal(&mut self) -> Option<SpanContext> {
         self.0.take()
     }
 }
 
-/// The loop driver. Borrows the provider, the assembled context, and the wired
-/// pipeline; runs spans against an [`Observations`] source.
+// ---------------------------------------------------------------------------
+// Admitter — gate at the loop boundary (Wave 5)
+// ---------------------------------------------------------------------------
+
+/// Decides whether a span should be admitted into the loop.
+///
+/// This is the loop-level gate that the heartbeat admission filter
+/// (`obs.admission`) feeds into. The default implementation ([`AdmitAll`])
+/// admits every span.
+pub trait Admitter: Send + Sync {
+    /// Return `true` to admit the span, `false` to reject it.
+    fn admit(&self, span: &SpanContext) -> bool;
+}
+
+/// An admitter that admits every span. Used as the default when no custom
+/// admission logic is configured.
+pub struct AdmitAll;
+
+impl Admitter for AdmitAll {
+    fn admit(&self, _span: &SpanContext) -> bool {
+        true
+    }
+}
+
+/// The loop driver. Borrows the provider, the admitter, the assembled context,
+/// and the wired pipeline; runs spans against an [`Observations`] source.
 pub struct Loop<'a> {
     pub provider: &'a dyn Provider,
+    pub admitter: &'a dyn Admitter,
     pub pipeline: &'a Pipeline<'a>,
     pub events: &'a EventStream,
 }
@@ -86,24 +115,30 @@ impl<'a> Loop<'a> {
     pub fn run_span(&self, obs: &mut dyn Observations, ctx: &Context) -> RunReport {
         let mut report = RunReport::default();
 
-        // observe: take the first/next goal for the span.
+        // observe: take the first/next span for the run.
         let mut current = match obs.next_goal() {
-            Some(g) => g,
+            Some(sc) => sc,
             None => {
                 report.end = Some(RunEnd::StreamExhausted);
                 return report;
             }
         };
 
+        // Admission check: reject the span if the admitter says no.
+        if !self.admitter.admit(&current) {
+            report.end = Some(RunEnd::StreamExhausted);
+            return report;
+        }
+
         loop {
             self.events.emit(EventKind::RunStarted {
-                goal_id: current.id.clone(),
-                revision: current.revision,
+                goal_id: current.goal.id.clone(),
+                revision: current.goal.revision,
             });
 
             // decide: provider produces a provider-agnostic decision.
             let caps = self.pipeline.registry.all();
-            let decision: Decision = self.provider.decide(&current, ctx, &caps);
+            let decision: Decision = self.provider.decide(&current.goal, ctx, &caps);
             self.events.emit(EventKind::Decided {
                 provider: self.provider.id().to_string(),
                 intents: decision.intents.len(),
@@ -114,10 +149,10 @@ impl<'a> Loop<'a> {
             // whole decision unexecuted and pick up the new revision. This is the
             // exact hook the §14 safety veto reuses.
             if let Some(newer) = obs.superseding(&current) {
-                if current.superseded_by(&newer) {
+                if current.goal.superseded_by(&newer.goal) {
                     self.events.emit(EventKind::Abandoned {
-                        goal_id: current.id.clone(),
-                        superseded_by: newer.revision,
+                        goal_id: current.goal.id.clone(),
+                        superseded_by: newer.goal.revision,
                     });
                     current = newer;
                     continue; // re-decide on the newer revision; nothing enacted.
@@ -130,7 +165,7 @@ impl<'a> Loop<'a> {
             match outcome {
                 Some(o @ (Outcome::Achieved | Outcome::Abandoned)) => {
                     self.events.emit(EventKind::RunConcluded {
-                        goal_id: current.id.clone(),
+                        goal_id: current.goal.id.clone(),
                         outcome: o,
                     });
                     report.end = Some(RunEnd::Concluded(o));
@@ -140,7 +175,7 @@ impl<'a> Loop<'a> {
                     // Continue (explicit or implicit): step again if the stream
                     // has more, else exhausted.
                     match obs.next_goal() {
-                        Some(g) => { current = g; }
+                        Some(sc) => { current = sc; }
                         None => {
                             report.end = Some(RunEnd::StreamExhausted);
                             return report;
@@ -203,14 +238,21 @@ mod tests {
     use crate::events::{EventStream, MemorySink};
     use crate::pipeline::{AllowAll, EchoExecutor, Pipeline};
     use crate::registry::CapabilityRegistry;
-    use crate::schema::{Capability, Trigger, Value};
+    use crate::schema::{Capability, PersonaId, SpanContext, Trigger, Value};
 
     fn cap(id: &str) -> Capability {
         Capability { id: id.into(), summary: "".into(), args_schema: serde_json::json!({"type":"object"}) }
     }
-    fn goal(id: &str, rev: u64) -> Goal {
-        Goal { id: id.into(), revision: rev, objective: "o".into(),
-            trigger: Trigger::Tick { sequence: 0 } }
+    fn span_ctx(id: &str, rev: u64) -> SpanContext {
+        SpanContext {
+            persona: PersonaId("test".into()),
+            goal: Goal {
+                id: id.into(),
+                revision: rev,
+                objective: "o".into(),
+                trigger: Trigger::Tick { sequence: 0 },
+            },
+        }
     }
 
     /// A provider that emits a fixed decision, optionally returning different
@@ -237,8 +279,8 @@ mod tests {
                 args: serde_json::json!({"level":"high"}), correlation: None },
             ActionIntent::Conclude { outcome: Outcome::Achieved },
         ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
-        let mut obs = Once(Some(goal("g1", 0)));
+        let lp = Loop { provider: &provider, admitter: &AdmitAll, pipeline: &pipe, events: &stream };
+        let mut obs = Once(Some(span_ctx("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
         assert_eq!(report.effected, vec!["alert.raise"]);
         assert_eq!(report.expressed, vec!["working"]);
@@ -249,13 +291,13 @@ mod tests {
     /// An observation source that hands out g@0, then reports a superseding g@1
     /// exactly once, to drive the abandon-path.
     struct Superseding {
-        first: Option<Goal>,
-        newer: Option<Goal>,
+        first: Option<SpanContext>,
+        newer: Option<SpanContext>,
     }
     impl Observations for Superseding {
-        fn next_goal(&mut self) -> Option<Goal> { self.first.take() }
-        fn superseding(&mut self, current: &Goal) -> Option<Goal> {
-            self.newer.take().filter(|n| current.superseded_by(n))
+        fn next_goal(&mut self) -> Option<SpanContext> { self.first.take() }
+        fn superseding(&mut self, current: &SpanContext) -> Option<SpanContext> {
+            self.newer.take().filter(|n| current.goal.superseded_by(&n.goal))
         }
     }
 
@@ -272,8 +314,8 @@ mod tests {
                 args: serde_json::json!({}), correlation: None },
             ActionIntent::Conclude { outcome: Outcome::Achieved },
         ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
-        let mut obs = Superseding { first: Some(goal("g", 0)), newer: Some(goal("g", 1)) };
+        let lp = Loop { provider: &provider, admitter: &AdmitAll, pipeline: &pipe, events: &stream };
+        let mut obs = Superseding { first: Some(span_ctx("g", 0)), newer: Some(span_ctx("g", 1)) };
         let report = lp.run_span(&mut obs, &Context::default());
         // First revision's decision was discarded; only the re-decide on rev 1
         // actually executed the effect once.
@@ -292,8 +334,8 @@ mod tests {
             ActionIntent::Invoke { capability: "ghost".into(), args: Value::Null, correlation: None },
             ActionIntent::Conclude { outcome: Outcome::Achieved },
         ]}};
-        let lp = Loop { provider: &provider, pipeline: &pipe, events: &stream };
-        let mut obs = Once(Some(goal("g", 0)));
+        let lp = Loop { provider: &provider, admitter: &AdmitAll, pipeline: &pipe, events: &stream };
+        let mut obs = Once(Some(span_ctx("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
         assert_eq!(report.failed, vec!["ghost"]);
         assert!(report.effected.is_empty());
