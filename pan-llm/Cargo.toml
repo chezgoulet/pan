@@ -12,6 +12,11 @@ pan-core = { path = "../pan-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+# TLS for cloud BYOK. Pure-Rust: `ring` crypto provider (no cmake/OpenAI C
+# toolchain, unlike the default aws-lc-rs); `webpki-roots` bundles the Mozilla
+# root set so we need no system cert store.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 
 [dev-dependencies]
 tokio = { workspace = true }

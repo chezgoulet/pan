@@ -47,16 +47,30 @@ misconfiguration, not a silent no-op.
 
 ## Transport
 
-Today the client (`src/http.rs`) is a tiny std-only, blocking **HTTP/1.0** client
-— plain HTTP, aimed at local OpenAI-compatible servers. An `https://` base is a
-clear early error, not a silent plaintext downgrade. Cloud BYOK over TLS is an
-additive transport behind the same `post_json` shape (the next increment); the
-tool-use *mapping* above is unchanged by it.
+The client (`src/http.rs`) is a tiny std-only, blocking **HTTP/1.0** client that
+speaks over either transport, chosen by the `base` scheme:
 
-Blocking I/O inside `async fn` is deliberate and matches `pan-daemon`'s llm
-client: the loop's abandon-path gives cancellation at the future level (a
-superseded goal drops the whole `decide`). A non-blocking client is a later
-refinement.
+- **`http://`** — a plain `TcpStream`, for local OpenAI-compatible servers and the
+  test mock.
+- **`https://`** — a rustls TLS stream (pure-Rust: the `ring` provider — no
+  cmake/C toolchain — and the Mozilla root set via `webpki-roots`), for cloud BYOK.
+  `api_key` is sent as `Authorization: Bearer …`.
+
+The request/response handling is identical across both; only the byte transport
+differs. HTTP/1.0 is deliberate (shared with `pan-daemon`'s llm client): it tells
+the server not to keep-alive or chunk-encode, so "read to EOF, split head from
+body" is a correct, tiny parser. A TLS peer that closes without a `close_notify`
+surfaces `UnexpectedEof`, which is treated as a clean end once the body is in hand.
+
+Blocking I/O inside `async fn` is deliberate too: the loop's abandon-path gives
+cancellation at the future level (a superseded goal drops the whole `decide`). A
+non-blocking client is a later refinement.
+
+The `https` path is exercised live — against a real endpoint — by
+`tests/live_cloud.rs`, which is **credential-gated** (a no-op unless
+`PAN_LLM_BASE` / `PAN_LLM_MODEL` / `PAN_LLM_API_KEY` are set), so CI and offline
+runs skip it. A separate **Anthropic-native** message dialect (vs the
+OpenAI-compatible one here) is an optional sibling provider.
 
 ## Run it
 

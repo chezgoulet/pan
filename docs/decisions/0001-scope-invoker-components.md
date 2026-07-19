@@ -307,25 +307,25 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   `decide` reconstructs the full function-calling transcript (system, user, then
   each `assistant(tool_call)` → `tool(result)` pair) from the goal + fragments, so
   a cancelled decide leaves nothing behind. Transport is a tiny std-only blocking
-  HTTP/1.0 client (`pan-llm::http`) for local OpenAI-compatible servers (Ollama,
-  llama.cpp, LM Studio); `https` is a clear error until the TLS transport lands —
-  that swap is now the *only* thing between this and cloud BYOK, since the
-  tool-use mapping is done and proven. Registered into `pan-agent`'s builtin set,
+  HTTP/1.0 client (`pan-llm::http`) that follows the `base` scheme: plain
+  `TcpStream` for local servers (`http://` — Ollama, llama.cpp, LM Studio), and a
+  **rustls TLS** stream for cloud BYOK (`https://` — OpenAI, OpenRouter, Groq,
+  Together, an Anthropic-compatible endpoint), pure-Rust via the `ring` provider +
+  `webpki-roots` (no cmake/C toolchain, no system cert store). Registered into
+  `pan-agent`'s builtin set,
   so any `Agent.toml` selects `provider = "provider.llm"` (with `base`/`model`,
   falling back to `PAN_LLM_*`; a missing endpoint is a load-time error). Tests run
   with **no network or key**: unit tests cover schema mapping, transcript
   reconstruction, and response interpretation, and `tests/tool_use.rs` drives the
   *whole* ReAct cycle — model asks for a tool, the loop executes the governed
   capability, the model sees the result and answers — against a localhost mock,
-  asserting the second request replays the tool_call and its result.
+  asserting the second request replays the tool_call and its result. The `https`
+  (TLS) path is exercised live by `tests/live_cloud.rs`, credential-gated on
+  `PAN_LLM_*` so CI/offline skip it; the TLS wiring itself (ring provider + root
+  store) is unit-tested with no network.
 
 Pending (next):
 
-- **TLS transport for cloud BYOK** — give `pan-llm::http` an `https` path (a
-  rustls client) so `provider.llm` reaches api.anthropic.com / api.openai.com, not
-  just local servers. The tool-use mapping is already done and proven; this is a
-  transport swap behind the same `post_json` shape. An Anthropic-native message
-  dialect (vs the OpenAI-compatible one) is an optional sibling provider.
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
   launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
   syscalls are denied, not just its unsanctioned Pan calls.

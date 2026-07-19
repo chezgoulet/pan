@@ -9,12 +9,13 @@ the always-loaded orientation is [`/CLAUDE.md`](../CLAUDE.md). Read both first._
 Pan is a **runnable, governed, interactive, tool-using agent assembled from
 `Agent.toml`** — with a real LLM brain (`provider.llm`) that *uses* tools — plus
 a Python skill runtime and the Soul Protocol daemon. Everything below is
-**green**: 156 tests, workspace `fmt` + `clippy -D warnings` clean, the four
+**green**: 159 tests, workspace `fmt` + `clippy -D warnings` clean, the four
 `pan-core` compile-fail guards hold, and Soul Protocol conformance is 19/19.
 
 This effort added these commits on top of `f16fd15` (each a coherent, green step):
 
 ```
+9578711 pan-llm — TLS transport (rustls), so provider.llm reaches cloud endpoints
 3601a8f pan-llm — tool-using LLM brain (provider.llm) plugged into the ReAct loop
 9c3c949 agentic tool-use (ReAct) loop — a provider can use a tool, not just name one
 fc818d3 docs: add HANDOFF.md for session continuity
@@ -41,7 +42,7 @@ The ADR's four decisions (D1–D4) are all landed. See the ADR's
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo test --workspace                              # 156 tests
+cargo test --workspace                              # 159 tests
 cargo fmt --all --check                             # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
@@ -79,7 +80,7 @@ path = "memory.json"
 | `pan-agent` | `Agent.toml` manifest + assembler | `assemble` → `AssembledAgent { scope, governor, provider, toolbox }`; `builtin_registry()`; providers `echo`/`command`/`rules`/`behaviortree`/`llm` |
 | `pan-cap` | `cap.*` components | `cap.state` (KV, optionally file-backed), `cap.fs` (rooted, path-jailed), `cap.shell` (direct exec) |
 | `pan-cli` | interactive REPL | `run_session`; the `pan-agent` binary (distinct from daemon's `pan`) |
-| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling mapped onto the ReAct loop; stateless transcript rebuild; std-only HTTP/1.0 (TLS pending) |
+| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling mapped onto the ReAct loop; stateless transcript rebuild; std-only HTTP/1.0 over plain **or** rustls TLS (local + cloud BYOK) |
 
 ## The through-line (so the mental model transfers)
 
@@ -156,14 +157,15 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
 Recommended order; each sits cleanly on what's built:
 
-1. **TLS transport for cloud BYOK** — `provider.llm` (crate `pan-llm`) already
-   does the full tool-use mapping and rides the ReAct loop; it just can't speak
-   `https` yet. Give `pan-llm::http` a rustls path so `base = "https://…"` reaches
-   api.anthropic.com / api.openai.com (with `api_key` / `PAN_LLM_API_KEY`, already
-   wired). Keep the mock-server tests as-is (plain http); add a small live-gated
-   test if you want. An Anthropic-*native* message dialect (vs OpenAI-compatible)
-   is an optional sibling provider in the same crate. This is the last mile to a
-   genuinely intelligent agent.
+1. **`provider.llm` is done and cloud-connected** — full tool-use mapping on the
+   ReAct loop, over plain HTTP (local) *and* rustls TLS (cloud BYOK: OpenAI,
+   OpenRouter, Groq, Together, an Anthropic-compatible endpoint). To verify live:
+   set `PAN_LLM_BASE`/`PAN_LLM_MODEL`/`PAN_LLM_API_KEY` and run
+   `cargo test -p pan-llm --test live_cloud -- --nocapture`. Remaining *optional*
+   polish: an **Anthropic-native** dialect (`/v1/messages`, `x-api-key` +
+   `anthropic-version`, its own tool-use shape) as a sibling provider in the same
+   crate — only needed for Anthropic features the OpenAI-compat endpoint doesn't
+   expose. Otherwise, move to the items below.
 2. **`cap.http`** — GET/POST, governed. Test against a localhost mock (see the
    daemon's llm test for the pattern), not the real network.
 3. **OS-level skill sandbox** — wire `SkillRunner::with_program` to `bwrap`/`nsjail`

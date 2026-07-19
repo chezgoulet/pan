@@ -54,9 +54,11 @@ module and never leaks into the core vocabulary.
   `loop_engine::TOOL_RESULT_CHANNEL`. It is **stateless** — each `decide`
   reconstructs the full function-calling transcript from the goal + fragments — so
   a superseded decide leaves nothing behind. Transport is a std-only blocking
-  HTTP/1.0 client (`pan-llm::http`) for local servers; `https` (TLS) is a clear
-  error until that transport lands. Registered into `pan-agent`'s builtin set.
-  Distinct from `pan-daemon/src/llm.rs`, which is single-shot Express for game NPCs.
+  HTTP/1.0 client (`pan-llm::http`) that follows the `base` scheme: plain
+  `TcpStream` for `http://` (local), a rustls TLS stream for `https://` (cloud
+  BYOK — pure-Rust `ring` provider + `webpki-roots`, no cmake/system certs).
+  Registered into `pan-agent`'s builtin set. Distinct from `pan-daemon/src/llm.rs`,
+  which is single-shot Express for game NPCs.
 
 Per-crate `README.md`s are detailed — read them before deep work. **For session
 continuity, start with [`docs/HANDOFF.md`](docs/HANDOFF.md)** (current status,

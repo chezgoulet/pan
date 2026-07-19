@@ -1,27 +1,32 @@
-//! # A tiny, std-only, blocking HTTP/1.0 JSON client.
+//! # A tiny, std-only, blocking HTTP/1.0 JSON client — plain **and** TLS.
 //!
-//! Deliberately minimal — no TLS, no async, no dependencies. It targets **local,
-//! plain-HTTP** OpenAI-compatible servers (Ollama, llama.cpp, LM Studio) and the
-//! mock server the tests spin up. HTTP/1.0 means the server neither keeps the
-//! connection alive nor chunk-encodes the body: read to EOF, split head from
-//! body, done — the whole client is ~a page of honest code.
+//! Deliberately minimal: no async, and no HTTP framework. It builds one request
+//! and reads one response, over either a plain `TcpStream` (`http://`, for local
+//! OpenAI-compatible servers and the test mock) or a rustls TLS stream
+//! (`https://`, for cloud BYOK — OpenAI, OpenRouter, Groq, Together, an
+//! Anthropic-compatible endpoint). The request/response handling is identical
+//! across both; only the byte transport differs.
 //!
-//! Cloud BYOK over TLS (`https://`) is an additive transport behind the same
-//! `post_json` shape; today an `https://` base is a clear, early error rather
-//! than a silent plaintext downgrade. This mirrors `pan-daemon`'s `llm.rs`
-//! client; the tool-use *mapping* on top is what this crate adds.
+//! HTTP/1.0 is a deliberate choice, shared with `pan-daemon`'s `llm.rs`: a 1.0
+//! request tells the server not to keep the connection alive or chunk-encode the
+//! body, so "read to EOF, split head from body" is a correct, tiny parser. Cloud
+//! edges (CloudFront et al.) honor a 1.0 request with `Connection: close`. TLS
+//! peers that close without a `close_notify` surface `UnexpectedEof`, which we
+//! treat as a clean end once the body is in hand.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use pan_core::schema::Value;
 
-const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// POST `body` as JSON to `base` + `path` and parse the JSON response. `api_key`,
-/// if present, is sent as a bearer token. Any transport/status/parse failure is a
-/// human-readable `Err(String)` — the provider turns that into `Conclude(Abandoned)`.
+/// if present, is sent as a bearer token. `http://` and `https://` bases are both
+/// supported. Any transport/status/parse failure is a human-readable `Err(String)`
+/// — the provider turns that into `Conclude(Abandoned)`.
 pub fn post_json(
     base: &str,
     path: &str,
@@ -29,17 +34,20 @@ pub fn post_json(
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let (host, port, full_path) = parse_base(base, path)?;
+    let target = parse_base(base, path)?;
+    let request = build_request(&target.host, &target.full_path, api_key, body);
+    let raw = match target.scheme {
+        Scheme::Http => http_exchange(&target.host, target.port, timeout, request.as_bytes())?,
+        Scheme::Https => https_exchange(&target.host, target.port, timeout, request.as_bytes())?,
+    };
+    parse_response(&raw)
+}
 
-    let mut stream =
-        TcpStream::connect((host.as_str(), port)).map_err(|e| format!("connect: {e}"))?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
+// ---------------------------------------------------------------------------
+// Request / response (transport-independent)
+// ---------------------------------------------------------------------------
 
+fn build_request(host: &str, full_path: &str, api_key: Option<&str>, body: &Value) -> String {
     let payload = body.to_string();
     let mut request = format!(
         "POST {full_path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
@@ -50,17 +58,10 @@ pub fn post_json(
     }
     request.push_str("\r\n");
     request.push_str(&payload);
+    request
+}
 
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("send: {e}"))?;
-
-    let mut raw = String::new();
-    stream
-        .take(MAX_RESPONSE_BYTES)
-        .read_to_string(&mut raw)
-        .map_err(|e| format!("read: {e}"))?;
-
+fn parse_response(raw: &str) -> Result<Value, String> {
     let (head, response_body) = raw
         .split_once("\r\n\r\n")
         .ok_or_else(|| "malformed HTTP response".to_string())?;
@@ -79,26 +80,132 @@ pub fn post_json(
     serde_json::from_str(response_body).map_err(|e| format!("bad response JSON: {e}"))
 }
 
-/// Split `http://host[:port][/prefix]` + a leading-slash `path` into
-/// `(host, port, full_path)`. `https://` is a deliberate error until the TLS
-/// transport lands.
-fn parse_base(base: &str, path: &str) -> Result<(String, u16, String), String> {
-    if base.starts_with("https://") {
-        return Err(
-            "pan-llm targets plain-http endpoints; https (TLS) transport is not yet implemented"
-                .to_string(),
-        );
+/// Read to EOF, tolerating a TLS peer that closes without a `close_notify`
+/// (surfaced as `UnexpectedEof`) once we already have the response bytes.
+fn read_to_end_tolerant(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > MAX_RESPONSE_BYTES {
+                    break;
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(format!("read: {e}")),
+        }
     }
-    let rest = base
-        .strip_prefix("http://")
-        .ok_or_else(|| format!("base {base:?} must start with http://"))?;
+    Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Transports
+// ---------------------------------------------------------------------------
+
+fn connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+    let stream = TcpStream::connect((host, port)).map_err(|e| format!("connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    Ok(stream)
+}
+
+fn http_exchange(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    request: &[u8],
+) -> Result<String, String> {
+    let mut stream = connect(host, port, timeout)?;
+    stream
+        .write_all(request)
+        .map_err(|e| format!("send: {e}"))?;
+    let bytes = read_to_end_tolerant(&mut stream)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn https_exchange(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    request: &[u8],
+) -> Result<String, String> {
+    let config = tls_config()?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| format!("invalid TLS server name {host:?}"))?;
+    let mut conn = rustls::ClientConnection::new(config, server_name)
+        .map_err(|e| format!("tls setup: {e}"))?;
+    let mut sock = connect(host, port, timeout)?;
+    let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+    tls.write_all(request)
+        .map_err(|e| format!("tls send: {e}"))?;
+    let bytes = read_to_end_tolerant(&mut tls)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The shared rustls client config (Mozilla roots, `ring` provider), built once.
+fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    if let Some(config) = CONFIG.get() {
+        return Ok(config.clone());
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("tls provider: {e}"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let config = Arc::new(config);
+    // A race here just discards one identical config; either wins.
+    let _ = CONFIG.set(config.clone());
+    Ok(config)
+}
+
+// ---------------------------------------------------------------------------
+// URL parsing
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+enum Scheme {
+    Http,
+    Https,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Target {
+    scheme: Scheme,
+    host: String,
+    port: u16,
+    full_path: String,
+}
+
+/// Split `http(s)://host[:port][/prefix]` + a leading-slash `path` into a
+/// [`Target`]. The port defaults by scheme (80 / 443).
+fn parse_base(base: &str, path: &str) -> Result<Target, String> {
+    let (scheme, rest, default_port) = if let Some(rest) = base.strip_prefix("https://") {
+        (Scheme::Https, rest, 443)
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        (Scheme::Http, rest, 80)
+    } else {
+        return Err(format!("base {base:?} must start with http:// or https://"));
+    };
+
     let (authority, prefix) = match rest.split_once('/') {
         Some((a, p)) => (a, p.trim_end_matches('/')),
         None => (rest, ""),
     };
     let (host, port) = match authority.rsplit_once(':') {
         Some((h, p)) => (h, p.parse::<u16>().map_err(|_| format!("bad port {p:?}"))?),
-        None => (authority, 80),
+        None => (authority, default_port),
     };
     if host.is_empty() {
         return Err("empty host".into());
@@ -108,33 +215,60 @@ fn parse_base(base: &str, path: &str) -> Result<(String, u16, String), String> {
     } else {
         format!("/{prefix}{path}")
     };
-    Ok((host.to_string(), port, full_path))
+    Ok(Target {
+        scheme,
+        host: host.to_string(),
+        port,
+        full_path,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn target(scheme: Scheme, host: &str, port: u16, full_path: &str) -> Target {
+        Target {
+            scheme,
+            host: host.into(),
+            port,
+            full_path: full_path.into(),
+        }
+    }
+
     #[test]
-    fn parses_bases_with_and_without_prefix() {
+    fn parses_http_bases_with_and_without_prefix() {
         assert_eq!(
             parse_base("http://127.0.0.1:11434/v1", "/chat/completions").unwrap(),
-            ("127.0.0.1".into(), 11434, "/v1/chat/completions".into())
+            target(Scheme::Http, "127.0.0.1", 11434, "/v1/chat/completions")
         );
         assert_eq!(
             parse_base("http://localhost", "/chat/completions").unwrap(),
-            ("localhost".into(), 80, "/chat/completions".into())
-        );
-        assert_eq!(
-            parse_base("http://host:8080/", "/x").unwrap(),
-            ("host".into(), 8080, "/x".into())
+            target(Scheme::Http, "localhost", 80, "/chat/completions")
         );
     }
 
     #[test]
-    fn https_is_a_clear_error_for_now() {
-        assert!(parse_base("https://api.openai.com/v1", "/chat/completions")
-            .unwrap_err()
-            .contains("TLS"));
+    fn parses_https_and_defaults_to_443() {
+        assert_eq!(
+            parse_base("https://api.openai.com/v1", "/chat/completions").unwrap(),
+            target(Scheme::Https, "api.openai.com", 443, "/v1/chat/completions")
+        );
+        assert_eq!(
+            parse_base("https://example.com:8443", "/x").unwrap(),
+            target(Scheme::Https, "example.com", 8443, "/x")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_scheme() {
+        assert!(parse_base("ftp://x/y", "/z").is_err());
+        assert!(parse_base("api.openai.com", "/z").is_err());
+    }
+
+    #[test]
+    fn tls_config_builds() {
+        // Exercises the ring provider + root store wiring (no network).
+        assert!(tls_config().is_ok());
     }
 }

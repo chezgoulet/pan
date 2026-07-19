@@ -8,10 +8,11 @@
 //! `Provider` behind the same vocabulary (no chat-shaped types leak into the
 //! core).
 //!
-//! Today it targets **plain-HTTP** OpenAI-compatible servers (Ollama, llama.cpp,
-//! LM Studio, a local gateway); cloud BYOK over TLS is an additive transport (see
-//! [`http`]). Register it onto a [`ComponentRegistry`] so an `Agent.toml` can
-//! select `provider = "provider.llm"`:
+//! It speaks the OpenAI-compatible `/chat/completions` dialect over either plain
+//! HTTP (local servers: Ollama, llama.cpp, LM Studio, a gateway) or TLS (cloud
+//! BYOK: OpenAI, OpenRouter, Groq, Together, an Anthropic-compatible endpoint) —
+//! the transport follows the `base` scheme (see [`http`]). Register it onto a
+//! [`ComponentRegistry`] so an `Agent.toml` can select `provider = "provider.llm"`:
 //!
 //! ```toml
 //! [persona]

@@ -36,8 +36,9 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// calling. Works against any compatible server (Ollama, llama.cpp, LM Studio, an
 /// OpenAI-compatible gateway) reachable over plain HTTP.
 pub struct OpenAiProvider {
-    /// Base URL, e.g. `http://127.0.0.1:11434/v1` (the `/chat/completions` path is
-    /// appended). Plain http only for now — see [`crate::http`].
+    /// Base URL, e.g. `http://127.0.0.1:11434/v1` (local) or
+    /// `https://api.openai.com/v1` (cloud); the `/chat/completions` path is
+    /// appended. Both http and https (TLS) are supported — see [`crate::http`].
     pub base: String,
     /// Model id sent with every request.
     pub model: String,
