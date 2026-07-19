@@ -1,0 +1,20 @@
+[package]
+name = "pan-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The pan-agent CLI: run an Agent.toml as an interactive agent over stdin/stdout (ADR 0001)."
+
+[dependencies]
+pan-core = { path = "../pan-core" }
+pan-agent = { path = "../pan-agent" }
+tokio = { workspace = true }
+
+[[bin]]
+name = "pan-agent"
+path = "src/bin/pan_agent.rs"
+
+[lints.rust]
+unsafe_code = "forbid"

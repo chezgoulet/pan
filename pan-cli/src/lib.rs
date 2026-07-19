@@ -1,0 +1,100 @@
+//! # pan-cli — run an `Agent.toml` as an interactive agent.
+//!
+//! The thin layer that turns an [`AssembledAgent`](pan_agent::AssembledAgent) into
+//! a running REPL: each input line becomes a `Goal` (an `Utterance`), one loop
+//! span decides + enacts it under the agent's scope + governor + toolbox, and the
+//! provider's `Express` output is written back. This is the `channel.cli` of the
+//! plan, and it is *thin* precisely because `assemble` already produced the whole
+//! graph — the CLI just feeds it lines and prints replies.
+//!
+//! The intelligence is the configured provider: `provider.echo` answers out of
+//! the box; a rules/behavior-tree brain reacts to events/signals; a real LLM
+//! provider (behind the same trait) makes it conversational. The harness here is
+//! provider-agnostic — the whole point of Pan's vocabulary.
+
+use pan_agent::AssembledAgent;
+use pan_core::events::{DiscardSink, EventStream};
+use pan_core::loop_engine::{Loop, Once};
+use pan_core::pipeline::Pipeline;
+use pan_core::schema::{Context, Goal, Trigger};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+
+/// Drive `agent` as a REPL: read lines from `reader`, write replies to `writer`,
+/// until EOF or a `/quit` line. Each line is one discrete turn.
+///
+/// Everything the loop needs comes from the [`AssembledAgent`]: `toolbox.registry()`
+/// is the capability registry, `&toolbox` the executor, `governor` the govern
+/// stage, and `provider` + `scope` drive decisions. Effects are governed exactly
+/// as everywhere else — the CLI is just another origin of goals.
+pub async fn run_session<R, W>(
+    agent: &AssembledAgent,
+    reader: R,
+    writer: &mut W,
+) -> std::io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let registry = agent.toolbox.registry();
+    let mut stream = EventStream::spawn(DiscardSink);
+    let pipeline = Pipeline {
+        registry: &registry,
+        governor: &agent.governor,
+        executor: &agent.toolbox,
+        events: &stream,
+    };
+    let lp = Loop {
+        provider: agent.provider.as_ref(),
+        pipeline: &pipeline,
+        events: &stream,
+        scope: agent.scope.clone(),
+    };
+
+    let mut lines = reader.lines();
+    let mut turn: u64 = 0;
+    while let Some(raw) = lines.next_line().await? {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "/quit" || line == "/exit" {
+            break;
+        }
+
+        turn += 1;
+        let goal = Goal {
+            id: format!("turn-{turn}"),
+            revision: 0,
+            objective: line.to_string(),
+            trigger: Trigger::Utterance {
+                from: "user".into(),
+                content: line.to_string(),
+            },
+        };
+        let mut obs = Once(Some(goal));
+        let report = lp.run_span(&mut obs, &Context::default()).await;
+
+        for body in &report.expressed {
+            writer.write_all(body.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+        }
+        for failed in &report.failed {
+            writer
+                .write_all(format!("[error] capability `{failed}` failed\n").as_bytes())
+                .await?;
+        }
+        writer.flush().await?;
+    }
+
+    stream.shutdown();
+    Ok(())
+}
+
+/// Convenience for the binary and tests: run a session over an in-memory byte
+/// buffer, returning everything written. Keeps the REPL logic testable without a
+/// terminal.
+pub async fn run_session_on_bytes(agent: &AssembledAgent, input: &[u8]) -> std::io::Result<String> {
+    let mut out: Vec<u8> = Vec::new();
+    run_session(agent, BufReader::new(input), &mut out).await?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}

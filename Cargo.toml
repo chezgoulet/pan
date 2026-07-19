@@ -5,6 +5,7 @@ members = [
     "pan-skill",
     "pan-agent",
     "pan-cap",
+    "pan-cli",
 ]
 resolver = "2"
 
@@ -23,4 +24,4 @@ serde_json = "1"
 # `&dyn Provider`, which native `async fn` in traits cannot do). tokio provides
 # the runtime, `select!` for the cancellable abandon-path, and `time` for tests.
 async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util", "io-std"] }

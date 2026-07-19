@@ -12,6 +12,7 @@ pan-core = { path = "../pan-core" }
 pan-cap = { path = "../pan-cap" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+async-trait = { workspace = true }
 toml = "0.8"
 
 [dev-dependencies]

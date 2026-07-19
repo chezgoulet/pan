@@ -11,6 +11,8 @@ use pan_core::providers::behaviortree::{BehaviorTreeProvider, Node};
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::schema::{Provider, Value};
 
+use crate::echo::EchoProvider;
+
 /// Build the registry of components a stock `pan` binary knows how to construct:
 /// the pan-core providers, plus the `pan-cap` capability components (`cap.state`,
 /// `cap.fs`). A deployment registers its own components on top.
@@ -22,8 +24,20 @@ pub fn builtin_registry() -> ComponentRegistry {
         .expect("unique builtin id");
     reg.register_provider("provider.behaviortree", build_behaviortree)
         .expect("unique builtin id");
+    reg.register_provider("provider.echo", build_echo)
+        .expect("unique builtin id");
     pan_cap::register_builtin_caps(&mut reg).expect("unique builtin capability ids");
     reg
+}
+
+/// `provider.echo` — replies to the user's utterance; an optional `prefix` from
+/// `[persona] prefix = "…"` shapes the reply.
+fn build_echo(cfg: &ComponentConfig) -> Result<Box<dyn Provider>, ComponentError> {
+    let mut echo = EchoProvider::default();
+    if let Some(prefix) = cfg.settings.get("prefix").and_then(|p| p.as_str()) {
+        echo.prefix = prefix.to_string();
+    }
+    Ok(Box::new(echo))
 }
 
 /// `provider.rules` — parses an optional `rules` array out of settings; with no

@@ -29,8 +29,10 @@
 
 pub mod assembler;
 pub mod builtin;
+pub mod echo;
 pub mod manifest;
 
 pub use assembler::{assemble, assemble_toml, AssembleError, AssembledAgent};
 pub use builtin::builtin_registry;
+pub use echo::EchoProvider;
 pub use manifest::{AgentManifest, Caps, ManifestError, Meta, Persona};

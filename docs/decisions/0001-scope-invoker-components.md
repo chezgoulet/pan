@@ -250,6 +250,17 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   hand-wiring. Enabling an unknown capability, or `cap.fs` without a root, is a
   load-time error.
 
+- **A runnable interactive agent — `pan-agent run`.** New crate `pan-cli`:
+  `run_session` drives a REPL over async byte streams (each line → an `Utterance`
+  goal → one governed loop span → the provider's `Express` written back), and the
+  `pan-agent` binary is a thin `main` over it on stdin/stdout. A dependency-free
+  `provider.echo` (in pan-agent) makes it conversational out of the box, so the
+  utterance → Express path has a real provider to exercise. The binary runs live
+  (`printf 'hello\n/quit\n' | pan-agent run Agent.toml` → `echo: hello`), and the
+  REPL is tested end-to-end over in-memory buffers. The harness is
+  provider-agnostic — swap in a rules brain or a real LLM and only the brain
+  changes; every effect still flows through the governed pipeline.
+
 Pending (next):
 
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
