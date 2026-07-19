@@ -38,7 +38,14 @@ use pan_core::components::{ComponentError, ComponentRegistry};
 /// - `cap.fs` **requires** a `root` setting (its jail directory) — omitting it is
 ///   a load-time error, not a silent unrooted filesystem.
 pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), ComponentError> {
-    registry.register_capability_provider("cap.state", |_cfg| Ok(Box::new(StateCaps::new())))?;
+    registry.register_capability_provider("cap.state", |cfg| {
+        // `[caps.settings."cap.state"] path = "…"` makes it persistent; no path is
+        // an in-memory store.
+        match cfg.settings.get("path").and_then(|p| p.as_str()) {
+            Some(path) => Ok(Box::new(StateCaps::with_file(path))),
+            None => Ok(Box::new(StateCaps::new())),
+        }
+    })?;
     registry.register_capability_provider("cap.fs", |cfg| {
         let root = cfg
             .settings
