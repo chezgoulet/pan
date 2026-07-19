@@ -134,6 +134,17 @@ hardware safety veto reuses — the veto is a question of *who sets the abandon
 signal*, not new plumbing. `supersession_mid_decide_cancels_the_decide_future`
 proves the cancellation (it counts *completed* decides: exactly one).
 
+The loop is also **agentic (ReAct)**: a decision that `Invoke`s a capability
+*without* `Conclude`ing gets each executed result — success or error — folded
+back into a per-goal working `Context` as a fragment on
+`loop_engine::TOOL_RESULT_CHANNEL` (opaque JSON `{capability, correlation?,
+result|error}`), and the provider re-decides on the **same** goal until it
+concludes, bounded by `MAX_TOOL_STEPS` (→ `RunEnd::StepLimit`, so the loop always
+terminates). This is what lets a tool-using LLM see a result and act on it; it
+stays provider-agnostic because the feedback rides the same `Context` fragments a
+rules/BT provider ignores, and it is backward-compatible (a provider that
+concludes in one step never enters the inner loop).
+
 **The daemon is still thread-per-perceive** (M7) and bridges to the async core via
 `pan_daemon::block_on` at two seams (`decide`, `dispatch_decision`). Converting the
 daemon's server/session/llm to fully async (dropping the bridge) is the next step;

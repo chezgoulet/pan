@@ -274,6 +274,26 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   at `govern` and reported. `cap.shell`'s arg-level policy (a program allowlist)
   is a future governor concern; today the boundary is the persona's grant.
 
+- **The agentic tool-use (ReAct) loop — a provider can now *use* a tool, not just
+  name one.** Until now every provider concluded in a single decision: it could
+  emit an `Invoke`, but never see the result. `Loop::run_span` gained a second,
+  inner loop: when a decision **acts without concluding**, each executed effect —
+  success *or* denial/error — is folded back into a per-goal working context as a
+  fragment on `TOOL_RESULT_CHANNEL` (`{capability, correlation?, result|error}`,
+  opaque to the core), and the provider re-decides on the **same** goal with the
+  results in hand. It loops until the provider `Conclude`s, bounded by
+  `MAX_TOOL_STEPS` (a runaway ends the span as the new `RunEnd::StepLimit`, so the
+  loop always terminates). Fully backward-compatible: every existing provider
+  concludes in one step and never enters the inner loop; the abandon-path is
+  unchanged (a superseding revision still drops the in-flight decide and restarts
+  with a fresh working context). Two new tests prove it — a ReAct provider that
+  invokes, sees its own `correlation` + result fed back, then answers and
+  concludes (decided exactly twice, effect fired once); and a never-concluding
+  provider stopped precisely at the step cap. This is the keystone the LLM
+  provider plugs into: it makes tool-*using* intelligence possible without any
+  provider being privileged, since the feedback rides the same opaque `Context`
+  fragments a rules/BT provider simply ignores.
+
 Pending (next):
 
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox

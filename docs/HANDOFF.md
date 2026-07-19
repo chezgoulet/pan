@@ -4,16 +4,19 @@ _Living continuity doc. Update the "Status" and "What's next" sections as work
 lands. The authoritative design is [ADR 0001](decisions/0001-scope-invoker-components.md);
 the always-loaded orientation is [`/CLAUDE.md`](../CLAUDE.md). Read both first._
 
-## Status (as of commit `ccc971e`, branch `testing`, pushed to `origin/testing`)
+## Status (branch `testing`, pushed to `origin/testing`)
 
-Pan is a **runnable, governed, interactive agent assembled from `Agent.toml`**,
-plus a Python skill runtime and the Soul Protocol daemon. Everything below is
-**green**: 143 tests, workspace `fmt` + `clippy -D warnings` clean, the four
-`pan-core` compile-fail guards hold, and Soul Protocol conformance is 19/19.
+Pan is a **runnable, governed, interactive, tool-using agent assembled from
+`Agent.toml`**, plus a Python skill runtime and the Soul Protocol daemon.
+Everything below is **green**: 145 tests, workspace `fmt` + `clippy -D warnings`
+clean, the four `pan-core` compile-fail guards hold, and Soul Protocol
+conformance is 19/19.
 
-This effort added 9 commits on top of `f16fd15` (each a coherent, green step):
+This effort added these commits on top of `f16fd15` (each a coherent, green step):
 
 ```
+(tip)   agentic tool-use (ReAct) loop — a provider can use a tool, not just name one
+fc818d3 docs: add HANDOFF.md for session continuity
 ccc971e persistent cap.state (remembers across restarts)
 c7cb11c interactive capabilities — cap.shell + provider.command
 e71e100 pan-agent run — interactive REPL CLI
@@ -37,7 +40,7 @@ The ADR's four decisions (D1–D4) are all landed. See the ADR's
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo test --workspace                              # 143 tests
+cargo test --workspace                              # 145 tests
 cargo fmt --all --check                             # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
@@ -87,6 +90,13 @@ Pipeline + Loop → governed capability runs.**
   emit the same `ActionIntent`s. Never special-case a provider.
 - Every effect goes through `resolve → validate → govern → execute`. There is no
   unscoped effect path; `EffectRequest` always carries a `Scope`.
+- The loop is **agentic (ReAct)**: a decision that `Invoke`s without `Conclude`
+  gets its results folded back into a per-goal working `Context` (fragments on
+  `loop_engine::TOOL_RESULT_CHANNEL`) and the provider re-decides on the *same*
+  goal — until it concludes, bounded by `MAX_TOOL_STEPS` (→ `RunEnd::StepLimit`).
+  Providers that conclude in one step (all the current ones) never enter it. This
+  is what lets a tool-using LLM see a result and act on it; the feedback is opaque
+  `Context` a rules/BT provider ignores.
 
 ## Conventions this effort followed (keep them)
 
@@ -145,10 +155,15 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 Recommended order; each sits cleanly on what's built:
 
 1. **Cloud LLM provider** — an `async` TLS client (rustls) behind the `Provider`
-   trait, registered as `provider.anthropic` / `provider.openai`. Makes the agent
-   genuinely intelligent + tool-using. Needs a key to run live; mock in tests.
-   (Note: a *local* OpenAI-compatible LLM provider already exists in
-   `pan-daemon/src/llm.rs` — consider lifting/sharing it as a component.)
+   trait, registered as `provider.anthropic` / `provider.openai`. The ReAct loop
+   is now in place, so this is where tool-*using* intelligence lands: map the
+   agent's `caps` to the model's tool schema, map a tool_use reply to `Invoke`
+   (set `correlation` = tool_call_id), read results back off
+   `loop_engine::TOOL_RESULT_CHANNEL`, and `Conclude` when the model stops. Needs
+   a key to run live; mock in tests. (Note: a *local* OpenAI-compatible LLM
+   provider already exists in `pan-daemon/src/llm.rs` — but it is single-shot
+   Express; the tool-use mapping is the new work. Consider lifting the HTTP/JSON
+   plumbing as a shared component.)
 2. **`cap.http`** — GET/POST, governed. Test against a localhost mock (see the
    daemon's llm test for the pattern), not the real network.
 3. **OS-level skill sandbox** — wire `SkillRunner::with_program` to `bwrap`/`nsjail`
