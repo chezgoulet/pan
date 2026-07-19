@@ -37,12 +37,26 @@ provider:
 
 - **`provider.echo`** — replies to each line (dependency-free; good for trying the
   loop and for tests).
+- **`provider.command`** — a typed command interpreter: `run <program> [args…]`,
+  `remember <key> <value…>`, `recall <key>`, `write <path> <content…>` map to
+  `cap.shell` / `cap.state` / `cap.fs` invokes. Makes the CLI actually *do* things.
 - **`provider.rules` / `provider.behaviortree`** — react to events/signals.
 - **A real LLM provider** (behind the same `Provider` trait) — makes it
   conversational. The harness doesn't change; only the brain does.
 
 Every effect a provider decides on still flows through the governed pipeline —
-the CLI grants no special authority.
+the CLI grants no special authority. Effect results (a shell's stdout, a recalled
+value) are shown via `RunReport.results`; an ungranted capability is denied at
+`govern` and reported as an error.
+
+```text
+$ printf 'run echo hi\nremember pet cat\nrecall pet\n/quit\n' | pan-agent run doer.toml
+$ echo hi
+hi
+remembered `pet`
+recalling `pet`:
+= "cat"
+```
 
 ## Library
 

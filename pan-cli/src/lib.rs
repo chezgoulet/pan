@@ -16,7 +16,7 @@ use pan_agent::AssembledAgent;
 use pan_core::events::{DiscardSink, EventStream};
 use pan_core::loop_engine::{Loop, Once};
 use pan_core::pipeline::Pipeline;
-use pan_core::schema::{Context, Goal, Trigger};
+use pan_core::schema::{Context, Goal, Trigger, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// Drive `agent` as a REPL: read lines from `reader`, write replies to `writer`,
@@ -78,6 +78,13 @@ where
             writer.write_all(body.as_bytes()).await?;
             writer.write_all(b"\n").await?;
         }
+        for (capability, result) in &report.results {
+            let rendered = render_result(capability, result);
+            if !rendered.is_empty() {
+                writer.write_all(rendered.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+            }
+        }
         for failed in &report.failed {
             writer
                 .write_all(format!("[error] capability `{failed}` failed\n").as_bytes())
@@ -88,6 +95,32 @@ where
 
     stream.shutdown();
     Ok(())
+}
+
+/// Render a capability's result for the user, when it carries something worth
+/// showing. `cap.shell.run` shows its stdout (and stderr); `cap.state.get` shows
+/// the value. Effects the provider already narrated (a write, a set) return an
+/// empty string here — no double reporting.
+fn render_result(capability: &str, result: &Value) -> String {
+    if let Some(stdout) = result.get("stdout").and_then(|s| s.as_str()) {
+        let mut out = stdout.trim_end().to_string();
+        if let Some(stderr) = result.get("stderr").and_then(|s| s.as_str()) {
+            let stderr = stderr.trim_end();
+            if !stderr.is_empty() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(stderr);
+            }
+        }
+        return out;
+    }
+    if capability == "cap.state.get" {
+        if let Some(value) = result.get("value") {
+            return format!("= {value}");
+        }
+    }
+    String::new()
 }
 
 /// Convenience for the binary and tests: run a session over an in-memory byte

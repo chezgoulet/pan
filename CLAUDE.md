@@ -33,16 +33,20 @@ module and never leaks into the core vocabulary.
   → a running, governed agent (the capstone test writes a real file from config).
   The plan's Design Decision #1. `builtin_registry()` is the stock component set
   (pan-core providers + pan-cap's `cap.state`/`cap.fs`).
-- **`pan-cap/`** — concrete `cap.*` components: `cap.state` (in-memory KV) and
-  `cap.fs` (rooted file access, path-jailed). Each is a `CapabilityProvider`; a
+- **`pan-cap/`** — concrete `cap.*` components: `cap.state` (in-memory KV),
+  `cap.fs` (rooted file access, path-jailed), `cap.shell` (run a program directly,
+  no shell interpretation). Each is a `CapabilityProvider`; a
   `pan-core::toolbox::Toolbox` composes them into the pipeline's capability
   registry + executor (`exec.local`). This is what lets an assembled agent *do*
   things — the governor decides *whether*, these components are *what runs*.
 - **`pan-cli/`** — the interactive agent CLI. `run_session` drives a REPL (each
   input line → an `Utterance` goal → one governed loop span → the provider's
-  `Express` reply); the **`pan-agent`** binary is `pan-agent run <Agent.toml>`.
-  Provider-agnostic — `provider.echo` answers out of the box; a rules brain or a
-  real LLM just swaps in. Distinct from pan-daemon's `pan` binary (`pan serve`).
+  `Express` reply + any effect `results`); the **`pan-agent`** binary is
+  `pan-agent run <Agent.toml>`. Provider-agnostic — `provider.echo` chats,
+  `provider.command` runs typed commands (`run`/`remember`/`recall`/`write` →
+  capabilities), a rules brain or real LLM just swaps in. Distinct from
+  pan-daemon's `pan` binary (`pan serve`). `RunReport.results` carries each
+  effect's return value so a channel can show capability output.
 
 Per-crate `README.md`s (pan-core, pan-daemon) are detailed — read them before deep work.
 

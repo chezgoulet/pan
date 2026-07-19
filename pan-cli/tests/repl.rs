@@ -83,3 +83,67 @@ provider = "provider.echo"
         "only the non-blank line replies: {out:?}"
     );
 }
+
+/// The full interactive stack: `provider.command` drives real capabilities.
+/// `run echo` executes and its stdout is shown; `remember`/`recall` round-trip
+/// through `cap.state`. Everything is governed by the manifest's grants.
+#[tokio::test]
+async fn command_agent_runs_shell_and_round_trips_state() {
+    let a = agent(
+        r#"
+[meta]
+name = "doer"
+[persona]
+provider = "provider.command"
+[caps]
+enable = ["cap.shell", "cap.state"]
+[caps.grant]
+shell = true
+state = true
+"#,
+    );
+    let out = run_session_on_bytes(
+        &a,
+        b"run echo hello world\nremember pet cat\nrecall pet\n/quit\n",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        out.contains("$ echo hello world"),
+        "narration missing: {out:?}"
+    );
+    assert!(out.contains("hello world"), "shell stdout missing: {out:?}");
+    assert!(
+        out.contains("remembered `pet`"),
+        "set narration missing: {out:?}"
+    );
+    assert!(out.contains("= \"cat\""), "recalled value missing: {out:?}");
+}
+
+/// Governance across the CLI: `cap.shell` is enabled (it exists) but the persona
+/// is NOT granted `shell`, so the invoke is denied at `govern` and the CLI reports
+/// the failure — the command cannot escape its scope.
+#[tokio::test]
+async fn an_ungranted_capability_is_denied_and_reported() {
+    let a = agent(
+        r#"
+[meta]
+name = "restricted"
+[persona]
+provider = "provider.command"
+[caps]
+enable = ["cap.shell"]
+[caps.grant]
+state = true
+"#,
+    );
+    let out = run_session_on_bytes(&a, b"run echo should-not-run\n/quit\n")
+        .await
+        .unwrap();
+
+    assert!(
+        out.contains("[error] capability `cap.shell.run` failed"),
+        "ungranted shell must be denied and reported: {out:?}"
+    );
+}

@@ -22,9 +22,11 @@
 //! ```
 
 pub mod fs;
+pub mod shell;
 pub mod state;
 
 pub use fs::FsCaps;
+pub use shell::ShellCaps;
 pub use state::StateCaps;
 
 use pan_core::components::{ComponentError, ComponentRegistry};
@@ -48,6 +50,7 @@ pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), Com
             })?;
         Ok(Box::new(FsCaps::new(root)))
     })?;
+    registry.register_capability_provider("cap.shell", |_cfg| Ok(Box::new(ShellCaps::new())))?;
     Ok(())
 }
 

@@ -18,6 +18,11 @@ This is the layer that lets an assembled agent actually *do* things:
   `cap.fs.list`, all confined to a root directory. Even a persona *granted*
   `cap.fs` cannot escape: absolute paths and `..` traversal are refused at the
   executor, independent of the governor.
+- **`cap.shell`** — run a program. `cap.shell.run` executes a program *directly*
+  (no shell, so no metacharacter interpretation or injection; `args` is an
+  explicit list) and returns exit code + stdout + stderr. Powerful and opt-in
+  twice (enable + grant); an arg-level program allowlist is a future governor
+  concern.
 
 ## The composed stack
 

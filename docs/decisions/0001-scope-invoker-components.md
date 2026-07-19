@@ -261,6 +261,19 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   provider-agnostic — swap in a rules brain or a real LLM and only the brain
   changes; every effect still flows through the governed pipeline.
 
+- **Interactive capabilities — the agent does real, governed work.** `cap.shell`
+  (run a program *directly* — no shell, so no injection class; exit/stdout/stderr
+  returned) joins `pan-cap`. `provider.command` (in pan-agent) is a deterministic
+  interpreter mapping utterances to invokes (`run`/`remember`/`recall`/`write` →
+  `cap.shell`/`cap.state`/`cap.fs`) — a fifth provider kind that reinforces
+  "many providers, one contract". `RunReport` gained an additive `results` field
+  (each effect's return value, surfaced synchronously — no racing the off-thread
+  event stream), and the CLI renders it (shell stdout, recalled values). Live:
+  `run echo …` / `remember`/`recall` / `run uname -s` all work through
+  `pan-agent run`, governed — and an enabled-but-ungranted `cap.shell` is denied
+  at `govern` and reported. `cap.shell`'s arg-level policy (a program allowlist)
+  is a future governor concern; today the boundary is the persona's grant.
+
 Pending (next):
 
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox

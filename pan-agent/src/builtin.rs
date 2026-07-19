@@ -26,6 +26,10 @@ pub fn builtin_registry() -> ComponentRegistry {
         .expect("unique builtin id");
     reg.register_provider("provider.echo", build_echo)
         .expect("unique builtin id");
+    reg.register_provider("provider.command", |_cfg| {
+        Ok(Box::new(crate::command::CommandProvider::new()))
+    })
+    .expect("unique builtin id");
     pan_cap::register_builtin_caps(&mut reg).expect("unique builtin capability ids");
     reg
 }

@@ -38,6 +38,11 @@ pub enum RunEnd {
 pub struct RunReport {
     /// Effects that fully passed the pipeline and executed.
     pub effected: Vec<String>,
+    /// The `(capability, result)` of each executed effect, in order — the same
+    /// results the executor returned, surfaced synchronously so a caller (a
+    /// channel, a UI) can display what a capability produced without racing the
+    /// off-thread event stream.
+    pub results: Vec<(String, crate::schema::Value)>,
     /// Effects that were attempted but failed/denied at some stage.
     pub failed: Vec<String>,
     /// Content emitted to channels.
@@ -193,7 +198,10 @@ impl<'a> Loop<'a> {
                         scope: self.scope.clone(),
                     };
                     match self.pipeline.dispatch(req).await {
-                        Ok(eff) => report.effected.push(eff.capability),
+                        Ok(eff) => {
+                            report.effected.push(eff.capability.clone());
+                            report.results.push((eff.capability, eff.result));
+                        }
                         Err(e) => {
                             report.failed.push(capability.clone());
                             self.emit_pipeline_error(capability, &e);
