@@ -32,7 +32,7 @@ fn registry() -> CapabilityRegistry {
     r
 }
 
-fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
+async fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
     println!("\n=== {label} ({}) ===", provider.id());
     let reg = registry();
     let mut stream = EventStream::spawn(PrintSink {
@@ -56,7 +56,7 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         objective: "show the core works".into(),
         trigger,
     }));
-    let report = lp.run_span(&mut obs, &Context::default());
+    let report = lp.run_span(&mut obs, &Context::default()).await;
     stream.shutdown();
     println!(
         "  -> effected={:?} expressed={:?} end={:?}",
@@ -64,7 +64,8 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
     );
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!(
         "Pan Wave 0 — three providers, one core.\n\
               Each runs through the SAME loop and the SAME non-bypassable pipeline."
@@ -79,7 +80,8 @@ fn main() {
             from: "user".into(),
             content: "hello".into(),
         },
-    );
+    )
+    .await;
 
     drive(
         "BehaviorTree",
@@ -93,7 +95,8 @@ fn main() {
             ],
         },
         Trigger::Tick { sequence: 1 },
-    );
+    )
+    .await;
 
     drive(
         "Rules",
@@ -108,7 +111,8 @@ fn main() {
             name: "temp".into(),
             value: 91.0,
         },
-    );
+    )
+    .await;
 
     println!("\nThe core could not tell which provider produced each Decision.");
 }

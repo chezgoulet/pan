@@ -187,17 +187,29 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   instead of a stale `pan-core/target`, and treats rustc error-code drift as a
   warning while still failing on a bypass that compiles or a setup with no
   compiler error at all.
+- **D4 — async core with a real cancellable abandon-path.** `Provider`,
+  `Governor`, `Executor`, `Observations`, and `ScopedInvoker` are async (via
+  `async-trait`, for dyn-compatibility); `Pipeline::{govern,execute,dispatch}`
+  and `Loop::run_span` are async. The abandon-path is now a `tokio::select!`
+  (`biased`) race between `decide` and `Observations::superseded`: a newer
+  revision arriving mid-decide **drops** the in-flight decide future. Both racing
+  futures borrow a per-iteration `snapshot`, never `current`, so the supersession
+  arm reassigns `current` cleanly. New test
+  `supersession_mid_decide_cancels_the_decide_future` proves cancellation by
+  counting *completed* decides: exactly one (the survivor), not two. The daemon
+  stays thread-per-perceive and bridges via `pan_daemon::block_on` at its two
+  async seams (`decide`, `dispatch_decision`); Soul Protocol conformance (19)
+  unchanged.
 
 Pending (next):
 
-- **D4 — concurrent cancellable abandon-path.** Requires the async refactor
-  (tokio, `async-trait`); deliberately not started here to avoid a half-migrated
-  tree. `decide` takes an owned `Arc<Goal>`; decide is raced against a
-  supersession signal and dropped on supersession. New test: supersession
-  mid-decide cancels the decide future before it completes.
+- **Fully async daemon** — drop the `block_on` bridge: convert `server.rs` (TCP
+  loopback) and `session.rs` to tokio, and give `llm.rs` a non-blocking client.
+  Only then does one slow soul stop occupying a whole OS thread.
 - **Retire the daemon's hard-coded wiring** onto `ComponentRegistry`. Note the
   daemon's `ResolveGovernor<'a>` borrows the capability registry, so this is a
   real lifetime restructuring (build components into session-owned storage), not
   a mechanical swap — Phase 2 work, done with care.
 - **Subprocess transport** for `ScopedInvoker` (JSON-lines over stdin/stdout to
-  `python3`), landing on the async story so a blocked skill is a suspended future.
+  `python3`); now that a blocked skill can be a suspended future, no thread per
+  skill is needed for the common path.

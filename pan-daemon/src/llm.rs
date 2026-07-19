@@ -149,6 +149,7 @@ pub struct LlmProvider {
     pub config: LlmConfig,
 }
 
+#[async_trait::async_trait]
 impl Provider for LlmProvider {
     fn id(&self) -> &str {
         "provider.llm.openai_compatible"
@@ -158,7 +159,12 @@ impl Provider for LlmProvider {
     /// prompt, the trigger becomes the user turn, the reply becomes `Express`.
     /// A transport/parse failure becomes `Conclude(Abandoned)` — the host's
     /// dialogue layer treats that as "the moment passes" and falls back.
-    fn decide(&self, goal: &Goal, ctx: &Context, _caps: &[Capability]) -> Decision {
+    ///
+    /// The body is still synchronous, blocking HTTP/1.0: the loop's abandon-path
+    /// gives cancellation at the *future* level (a superseded goal drops this
+    /// whole future), and the daemon runs each decide on its own thread, so
+    /// blocking here is contained. A non-blocking client is a later refinement.
+    async fn decide(&self, goal: &Goal, ctx: &Context, _caps: &[Capability]) -> Decision {
         let messages = serde_json::json!([
             {"role": "system", "content": system_prompt(goal, ctx)},
             {"role": "user", "content": user_turn(goal)},
@@ -411,7 +417,8 @@ mod tests {
         let provider = LlmProvider {
             config: config(port),
         };
-        let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
+        let decision =
+            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(
             decision.intents,
             vec![
@@ -431,7 +438,8 @@ mod tests {
         let provider = LlmProvider {
             config: config(port),
         };
-        let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
+        let decision =
+            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(decision.outcome(), Some(Outcome::Abandoned));
         assert!(decision
             .intents
@@ -443,7 +451,8 @@ mod tests {
     fn unreachable_server_becomes_conclude_abandoned() {
         // Port 1 is virtually never listening on loopback.
         let provider = LlmProvider { config: config(1) };
-        let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
+        let decision =
+            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(decision.outcome(), Some(Outcome::Abandoned));
     }
 
@@ -469,7 +478,8 @@ mod tests {
         let mut cfg = config(port);
         cfg.api = ApiKind::OllamaNative;
         let provider = LlmProvider { config: cfg };
-        let decision = provider.decide(&goal_utterance(), &Context::default(), &[]);
+        let decision =
+            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(
             decision.intents[0],
             ActionIntent::Express {

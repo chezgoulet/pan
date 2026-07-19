@@ -51,22 +51,29 @@ pub struct RunReport {
 /// This is the seam the manifest's "admission ↔ loop handoff for streaming"
 /// open question plugs into — the loop only requires "give me the next goal, or
 /// None when the span is done."
-pub trait Observations {
+#[async_trait::async_trait]
+pub trait Observations: Send {
     /// Return the next goal for this span, or `None` when the stream is done.
-    fn next_goal(&mut self) -> Option<Goal>;
+    async fn next_goal(&mut self) -> Option<Goal>;
 
-    /// Peek whether a newer revision of `current` has arrived without consuming
-    /// the normal stream position. Default: never superseded (discrete case).
-    /// A streaming source overrides this to enable mid-decide abandon.
-    fn superseding(&mut self, _current: &Goal) -> Option<Goal> {
-        None
+    /// Resolve **when** a goal strictly newer than `current` becomes available,
+    /// yielding it. This is a *future that fires on supersession*, not a poll: the
+    /// loop races it against the provider's `decide`, so when it resolves the
+    /// in-flight decision is dropped mid-flight (the abandon-path).
+    ///
+    /// The default never resolves — a discrete source has no supersession, so the
+    /// future stays pending forever and the loop always takes the decide branch.
+    /// A streaming/voice source overrides this to fire when a new revision lands.
+    async fn superseded(&mut self, _current: &Goal) -> Goal {
+        std::future::pending().await
     }
 }
 
 /// A single discrete goal — the degenerate one-observation span.
 pub struct Once(pub Option<Goal>);
+#[async_trait::async_trait]
 impl Observations for Once {
-    fn next_goal(&mut self) -> Option<Goal> {
+    async fn next_goal(&mut self) -> Option<Goal> {
         self.0.take()
     }
 }
@@ -89,11 +96,11 @@ impl<'a> Loop<'a> {
     /// Run one span to completion against an observation source and a context.
     /// Context assembly (the context family) is upstream of this in the full
     /// system; Wave 0 takes it as a parameter.
-    pub fn run_span(&self, obs: &mut dyn Observations, ctx: &Context) -> RunReport {
+    pub async fn run_span(&self, obs: &mut dyn Observations, ctx: &Context) -> RunReport {
         let mut report = RunReport::default();
 
         // observe: take the first/next goal for the span.
-        let mut current = match obs.next_goal() {
+        let mut current = match obs.next_goal().await {
             Some(g) => g,
             None => {
                 report.end = Some(RunEnd::StreamExhausted);
@@ -107,20 +114,24 @@ impl<'a> Loop<'a> {
                 revision: current.revision,
             });
 
-            // decide: provider produces a provider-agnostic decision.
             let caps = self.pipeline.registry.all();
-            let decision: Decision = self.provider.decide(&current, ctx, &caps);
-            self.events.emit(EventKind::Decided {
-                provider: self.provider.id().to_string(),
-                intents: decision.intents.len(),
-            });
 
-            // ABANDON-PATH: between decide and enact, re-check supersession. If a
-            // newer revision arrived while the provider was deciding, discard the
-            // whole decision unexecuted and pick up the new revision. This is the
-            // exact hook the §14 safety veto reuses.
-            if let Some(newer) = obs.superseding(&current) {
-                if current.superseded_by(&newer) {
+            // ABANDON-PATH (concurrent). Race the provider's `decide` against goal
+            // supersession. If a newer revision arrives *mid-decide*, the decide
+            // future is DROPPED (cancelled) unexecuted and we re-decide on the new
+            // revision — the in-flight work never reaches enact. `biased` polls
+            // supersession first, so a revision that is already available preempts
+            // a fresh decide. This is the exact hook the §14 hardware safety veto
+            // reuses: who sets the abandon signal changes, the machinery does not.
+            //
+            // Both futures borrow a per-iteration `snapshot`, never `current`
+            // itself, so the supersession arm can reassign `current` without
+            // colliding with the (now-dropped) decide future's borrow. See ADR
+            // 0001, D4.
+            let snapshot = current.clone();
+            let decision: Decision = tokio::select! {
+                biased;
+                newer = obs.superseded(&snapshot) => {
                     self.events.emit(EventKind::Abandoned {
                         goal_id: current.id.clone(),
                         superseded_by: newer.revision,
@@ -128,10 +139,15 @@ impl<'a> Loop<'a> {
                     current = newer;
                     continue; // re-decide on the newer revision; nothing enacted.
                 }
-            }
+                decision = self.provider.decide(&snapshot, ctx, &caps) => decision,
+            };
+            self.events.emit(EventKind::Decided {
+                provider: self.provider.id().to_string(),
+                intents: decision.intents.len(),
+            });
 
             // enact: route each intent. The terminal outcome (if any) ends the span.
-            let outcome = self.enact(&decision, &mut report);
+            let outcome = self.enact(&decision, &mut report).await;
 
             match outcome {
                 Some(o @ (Outcome::Achieved | Outcome::Abandoned)) => {
@@ -145,7 +161,7 @@ impl<'a> Loop<'a> {
                 _ => {
                     // Continue (explicit or implicit): step again if the stream
                     // has more, else exhausted.
-                    match obs.next_goal() {
+                    match obs.next_goal().await {
                         Some(g) => {
                             current = g;
                         }
@@ -161,7 +177,7 @@ impl<'a> Loop<'a> {
 
     /// enact one decision: dispatch effects, emit expressions, surface the
     /// terminal outcome. Returns the decision's concluding outcome if present.
-    fn enact(&self, decision: &Decision, report: &mut RunReport) -> Option<Outcome> {
+    async fn enact(&self, decision: &Decision, report: &mut RunReport) -> Option<Outcome> {
         let mut outcome = None;
         for intent in &decision.intents {
             match intent {
@@ -176,7 +192,7 @@ impl<'a> Loop<'a> {
                         correlation: correlation.clone(),
                         scope: self.scope.clone(),
                     };
-                    match self.pipeline.dispatch(req) {
+                    match self.pipeline.dispatch(req).await {
                         Ok(eff) => report.effected.push(eff.capability),
                         Err(e) => {
                             report.failed.push(capability.clone());
@@ -240,17 +256,18 @@ mod tests {
     struct ScriptedProvider {
         decision: Decision,
     }
+    #[async_trait::async_trait]
     impl Provider for ScriptedProvider {
         fn id(&self) -> &str {
             "provider.scripted"
         }
-        fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
+        async fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
             self.decision.clone()
         }
     }
 
-    #[test]
-    fn run_span_executes_invoke_and_concludes() {
+    #[tokio::test]
+    async fn run_span_executes_invoke_and_concludes() {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("alert.raise")).unwrap();
         let mut stream = EventStream::spawn(MemorySink::new());
@@ -284,7 +301,7 @@ mod tests {
             scope: Scope::system(),
         };
         let mut obs = Once(Some(goal("g1", 0)));
-        let report = lp.run_span(&mut obs, &Context::default());
+        let report = lp.run_span(&mut obs, &Context::default()).await;
         assert_eq!(report.effected, vec!["alert.raise"]);
         assert_eq!(report.expressed, vec!["working"]);
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
@@ -292,22 +309,27 @@ mod tests {
     }
 
     /// An observation source that hands out g@0, then reports a superseding g@1
-    /// exactly once, to drive the abandon-path.
+    /// exactly once, to drive the abandon-path. `superseded` resolves immediately
+    /// the first time (a newer revision is already waiting) and never again.
     struct Superseding {
         first: Option<Goal>,
         newer: Option<Goal>,
     }
+    #[async_trait::async_trait]
     impl Observations for Superseding {
-        fn next_goal(&mut self) -> Option<Goal> {
+        async fn next_goal(&mut self) -> Option<Goal> {
             self.first.take()
         }
-        fn superseding(&mut self, current: &Goal) -> Option<Goal> {
-            self.newer.take().filter(|n| current.superseded_by(n))
+        async fn superseded(&mut self, current: &Goal) -> Goal {
+            match self.newer.take() {
+                Some(n) if current.superseded_by(&n) => n,
+                _ => std::future::pending().await,
+            }
         }
     }
 
-    #[test]
-    fn superseded_decision_is_abandoned_not_executed() {
+    #[tokio::test]
+    async fn superseded_decision_is_abandoned_not_executed() {
         let mut reg = CapabilityRegistry::new();
         reg.register(cap("danger.fire")).unwrap();
         let mut stream = EventStream::spawn(MemorySink::new());
@@ -343,7 +365,7 @@ mod tests {
             first: Some(goal("g", 0)),
             newer: Some(goal("g", 1)),
         };
-        let report = lp.run_span(&mut obs, &Context::default());
+        let report = lp.run_span(&mut obs, &Context::default()).await;
         // First revision's decision was discarded; only the re-decide on rev 1
         // actually executed the effect once.
         assert_eq!(
@@ -355,8 +377,8 @@ mod tests {
         stream.shutdown();
     }
 
-    #[test]
-    fn failed_effect_is_recorded_not_fatal() {
+    #[tokio::test]
+    async fn failed_effect_is_recorded_not_fatal() {
         let reg = CapabilityRegistry::new(); // empty → resolve fails
         let mut stream = EventStream::spawn(MemorySink::new());
         let pipe = Pipeline {
@@ -386,9 +408,119 @@ mod tests {
             scope: Scope::system(),
         };
         let mut obs = Once(Some(goal("g", 0)));
-        let report = lp.run_span(&mut obs, &Context::default());
+        let report = lp.run_span(&mut obs, &Context::default()).await;
         assert_eq!(report.failed, vec!["ghost"]);
         assert!(report.effected.is_empty());
+        assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
+        stream.shutdown();
+    }
+
+    // --- D4: the abandon-path actually CANCELS an in-flight decide ------------
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A provider whose `decide` takes real time and records *completion*. If the
+    /// future is cancelled mid-flight, the completion counter never increments —
+    /// which is exactly how we observe that the abandon-path dropped it.
+    struct SlowProvider {
+        completed: Arc<AtomicU64>,
+        decision: Decision,
+        delay: Duration,
+    }
+    #[async_trait::async_trait]
+    impl Provider for SlowProvider {
+        fn id(&self) -> &str {
+            "provider.slow"
+        }
+        async fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
+            tokio::time::sleep(self.delay).await;
+            // Only reached if the future was NOT cancelled before this point.
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            self.decision.clone()
+        }
+    }
+
+    /// Hands out g@0, then fires supersession to g@1 after a delay — long enough
+    /// to land *while* the slow provider is mid-decide, short enough to preempt it.
+    struct SupersedeAfter {
+        first: Option<Goal>,
+        newer: Option<Goal>,
+        after: Duration,
+    }
+    #[async_trait::async_trait]
+    impl Observations for SupersedeAfter {
+        async fn next_goal(&mut self) -> Option<Goal> {
+            self.first.take()
+        }
+        async fn superseded(&mut self, current: &Goal) -> Goal {
+            match self.newer.take() {
+                Some(n) if current.superseded_by(&n) => {
+                    tokio::time::sleep(self.after).await;
+                    n
+                }
+                _ => std::future::pending().await,
+            }
+        }
+    }
+
+    /// THE D4 GUARANTEE: a supersession arriving mid-decide cancels the in-flight
+    /// decide future *before it completes*. If the abandon were merely a post-hoc
+    /// check (wait for decide, then notice supersession), the slow provider would
+    /// complete twice (rev 0 and rev 1). Because it is a true concurrent cancel,
+    /// only the surviving revision's decide runs to completion.
+    #[tokio::test]
+    async fn supersession_mid_decide_cancels_the_decide_future() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register(cap("danger.fire")).unwrap();
+        let mut stream = EventStream::spawn(MemorySink::new());
+        let pipe = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+        let completed = Arc::new(AtomicU64::new(0));
+        let provider = SlowProvider {
+            completed: Arc::clone(&completed),
+            delay: Duration::from_millis(120),
+            decision: Decision {
+                intents: vec![
+                    ActionIntent::Invoke {
+                        capability: "danger.fire".into(),
+                        args: serde_json::json!({}),
+                        correlation: None,
+                    },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
+                ],
+            },
+        };
+        let lp = Loop {
+            provider: &provider,
+            pipeline: &pipe,
+            events: &stream,
+            scope: Scope::system(),
+        };
+        let mut obs = SupersedeAfter {
+            first: Some(goal("g", 0)),
+            newer: Some(goal("g", 1)),
+            after: Duration::from_millis(20),
+        };
+        let report = lp.run_span(&mut obs, &Context::default()).await;
+
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            1,
+            "only the surviving revision's decide should complete; rev 0 was cancelled mid-flight"
+        );
+        assert_eq!(
+            report.effected,
+            vec!["danger.fire"],
+            "the effect fires exactly once, on the surviving revision"
+        );
         assert_eq!(report.end, Some(RunEnd::Concluded(Outcome::Achieved)));
         stream.shutdown();
     }

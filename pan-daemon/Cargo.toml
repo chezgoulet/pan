@@ -11,6 +11,8 @@ description = "The mind daemon: speaks the Soul Protocol over TCP loopback NDJSO
 pan-core = { path = "../pan-core" }
 serde.workspace = true
 serde_json.workspace = true
+async-trait = { workspace = true }
+tokio = { workspace = true }
 
 [[bin]]
 name = "pan"

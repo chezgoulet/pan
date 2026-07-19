@@ -34,3 +34,22 @@ pub mod wire;
 // Re-export the Pan core vocabulary at the daemon root, so callers building on
 // pan-daemon have one import: `use pan_daemon::{Goal, Capability, ...}`.
 pub use pan_core::schema;
+
+/// Bridge a `pan-core` async call (the pipeline / a provider `decide`) to the
+/// daemon's synchronous, thread-per-perceive world.
+///
+/// pan-core went async in ADR 0001 (D4) so the loop can cancel an in-flight
+/// decide the moment a goal is superseded. The daemon still drives each perceive
+/// on its own std thread (M7), which is *not* a tokio task, so blocking on a
+/// small current-thread runtime here is safe and correct — there is exactly one
+/// decide + one dispatch per perceive, so the runtime setup cost is noise next to
+/// a model call. Converting the daemon itself to a fully async server (dropping
+/// this bridge) is the D4 follow-up; until then this is the single, explicit
+/// seam between the async core and the threaded daemon.
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build a current-thread tokio runtime for the perceive bridge")
+        .block_on(future)
+}

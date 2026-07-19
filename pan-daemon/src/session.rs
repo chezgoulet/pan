@@ -436,7 +436,8 @@ impl Session {
         match self.begin_perceive(re, body) {
             Err(replies) => Ok(replies),
             Ok(job) => {
-                let decision = job.provider.decide(&job.goal, &job.context, &job.caps);
+                let decision =
+                    crate::block_on(job.provider.decide(&job.goal, &job.context, &job.caps));
                 Ok(self.finish_perceive(&job, decision))
             }
         }
@@ -533,7 +534,7 @@ impl Session {
         // The soul on whose behalf we are enacting is the invocation's origin:
         // the `govern` stage sees `soul.<id>` and can apply per-soul policy.
         let scope = Scope::new(format!("soul.{}", job.soul_id));
-        let outcome = self.dispatch_decision(&decision, &pipeline, &scope);
+        let outcome = crate::block_on(self.dispatch_decision(&decision, &pipeline, &scope));
         // Shut the stream down so the consumer thread exits; events were
         // discarded by the sink.
         stream.shutdown();
@@ -574,10 +575,10 @@ impl Session {
     /// (Express and Conclude are not world-effects and pass through). If the
     /// provider's decision had no Conclude, we append `Continue` so the
     /// host's loop reads a well-formed outcome.
-    fn dispatch_decision(
+    async fn dispatch_decision(
         &self,
         decision: &Decision,
-        pipeline: &Pipeline,
+        pipeline: &Pipeline<'_>,
         scope: &Scope,
     ) -> DispatchOutcome {
         let mut out = Vec::new();
@@ -594,7 +595,7 @@ impl Session {
                         correlation: correlation.clone(),
                         scope: scope.clone(),
                     };
-                    if let Err(e) = pipeline.dispatch(req) {
+                    if let Err(e) = pipeline.dispatch(req).await {
                         return DispatchOutcome::Failed {
                             code: pipeline_err_to_wire(&e),
                             message: pipeline_err_message(&e),
@@ -637,11 +638,12 @@ impl Default for Session {
 /// this daemon doesn't yet support. Its `decide` returns a Continue-only
 /// decision so the host gets a well-formed `decision` reply.
 struct NoProvider;
+#[async_trait::async_trait]
 impl Provider for NoProvider {
     fn id(&self) -> &str {
         "provider.none"
     }
-    fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
+    async fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
         Decision {
             intents: vec![ActionIntent::Conclude {
                 outcome: v::Outcome::Continue,
@@ -1007,7 +1009,7 @@ mod async_perceive_tests {
         let job2 = s.begin_perceive(11, perceive_body("conv", 2)).unwrap();
 
         // job1 finishes AFTER rev 2 was perceived — the player walked away.
-        let d1 = job1.provider.decide(&job1.goal, &job1.context, &job1.caps);
+        let d1 = crate::block_on(job1.provider.decide(&job1.goal, &job1.context, &job1.caps));
         let outs = s.finish_perceive(&job1, d1);
         assert_eq!(outs.len(), 1);
         match &outs[0].body {
@@ -1019,7 +1021,7 @@ mod async_perceive_tests {
         }
 
         // job2 is the live revision; it completes normally.
-        let d2 = job2.provider.decide(&job2.goal, &job2.context, &job2.caps);
+        let d2 = crate::block_on(job2.provider.decide(&job2.goal, &job2.context, &job2.caps));
         let outs = s.finish_perceive(&job2, d2);
         match &outs[0].body {
             Body::Decision(d) => {
@@ -1037,9 +1039,11 @@ mod async_perceive_tests {
         let mut s = ready_session();
         let job_a = s.begin_perceive(20, perceive_body("goal_a", 5)).unwrap();
         let _job_b = s.begin_perceive(21, perceive_body("goal_b", 1)).unwrap();
-        let d = job_a
-            .provider
-            .decide(&job_a.goal, &job_a.context, &job_a.caps);
+        let d = crate::block_on(
+            job_a
+                .provider
+                .decide(&job_a.goal, &job_a.context, &job_a.caps),
+        );
         let outs = s.finish_perceive(&job_a, d);
         assert!(
             matches!(outs[0].body, Body::Decision(_)),

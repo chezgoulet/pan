@@ -222,9 +222,17 @@ pub enum Outcome {
 /// The single trait the core knows. Note what is ABSENT: no messages, no system
 /// prompt, no temperature, no model name, no tokens. Those live inside whatever
 /// provider needs them.
+///
+/// `decide` is **async** and **cancel-safe**: the loop races it against goal
+/// supersession and drops the in-flight future if a newer revision arrives
+/// mid-decide (the abandon-path). A provider that holds resources across `.await`
+/// must therefore release them cleanly on drop — a cancelled `decide` must leave
+/// no effect behind, which is exactly the guarantee the pipeline already gives
+/// for effects (nothing executes without passing `govern`). See ADR 0001, D4.
+#[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
-    fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision;
+    async fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision;
 }
 
 /// The full result of one provider decision step.

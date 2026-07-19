@@ -262,8 +262,8 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn builds_the_configured_provider_without_leaking_its_type() {
+    #[tokio::test]
+    async fn builds_the_configured_provider_without_leaking_its_type() {
         let mut reg = ComponentRegistry::new();
         register_stdlib(&mut reg);
 
@@ -284,7 +284,7 @@ mod tests {
                 payload: Value::Null,
             },
         };
-        let decision = provider.decide(&goal, &Context::default(), &[]);
+        let decision = provider.decide(&goal, &Context::default(), &[]).await;
         assert!(!decision.intents.is_empty(), "the built rule should fire");
     }
 
@@ -328,8 +328,8 @@ mod tests {
         assert!(matches!(result, Err(ComponentError::Construction { .. })));
     }
 
-    #[test]
-    fn built_components_wire_into_a_real_pipeline() {
+    #[tokio::test]
+    async fn built_components_wire_into_a_real_pipeline() {
         use crate::events::{EventStream, MemorySink};
         use crate::pipeline::{EffectRequest, Pipeline, PipelineError};
         use crate::registry::CapabilityRegistry;
@@ -362,12 +362,14 @@ mod tests {
             executor: &crate::pipeline::EchoExecutor,
             events: &stream,
         };
-        let denied = pipe.dispatch(EffectRequest {
-            capability: "cap.fs.read".into(),
-            args: serde_json::json!({}),
-            correlation: None,
-            scope: Scope::new("skill.rogue"),
-        });
+        let denied = pipe
+            .dispatch(EffectRequest {
+                capability: "cap.fs.read".into(),
+                args: serde_json::json!({}),
+                correlation: None,
+                scope: Scope::new("skill.rogue"),
+            })
+            .await;
         assert!(matches!(denied, Err(PipelineError::Rejected(_))));
         stream.shutdown();
     }

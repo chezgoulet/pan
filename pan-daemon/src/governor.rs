@@ -35,12 +35,13 @@ pub struct ResolveGovernor<'a> {
     pub registry: &'a CapabilityRegistry,
 }
 
+#[async_trait::async_trait]
 impl<'a> Governor for ResolveGovernor<'a> {
     fn id(&self) -> &str {
         "gov.daemon.resolve"
     }
 
-    fn govern(&self, _scope: &Scope, capability: &str, _args: &Value) -> Verdict {
+    async fn govern(&self, _scope: &Scope, capability: &str, _args: &Value) -> Verdict {
         if self.registry.lookup(capability).is_some() {
             Verdict::Allow
         } else {
@@ -74,21 +75,24 @@ mod tests {
         r
     }
 
-    #[test]
-    fn registered_capability_is_allowed() {
+    #[tokio::test]
+    async fn registered_capability_is_allowed() {
         let r = reg_with(&["npc.move_to"]);
         let g = ResolveGovernor { registry: &r };
         assert!(matches!(
-            g.govern(&Scope::system(), "npc.move_to", &Value::Null),
+            g.govern(&Scope::system(), "npc.move_to", &Value::Null)
+                .await,
             Verdict::Allow
         ));
     }
 
-    #[test]
-    fn unregistered_capability_is_denied_with_explicit_reason() {
+    #[tokio::test]
+    async fn unregistered_capability_is_denied_with_explicit_reason() {
         let r = reg_with(&["npc.move_to"]);
         let g = ResolveGovernor { registry: &r };
-        let v = g.govern(&Scope::system(), "npc.fly_ship", &Value::Null);
+        let v = g
+            .govern(&Scope::system(), "npc.fly_ship", &Value::Null)
+            .await;
         match v {
             Verdict::Deny { reason } => {
                 assert!(

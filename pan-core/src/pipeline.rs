@@ -63,20 +63,22 @@ pub enum Verdict {
 /// only judge one (synthesis §3). The `scope` parameter is what makes
 /// per-persona sandboxing, skill sub-scopes, and self-modification guards
 /// expressible; see ADR 0001.
+#[async_trait::async_trait]
 pub trait Governor: Send + Sync {
     fn id(&self) -> &str;
-    fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict;
+    async fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict;
 }
 
 /// The trivial always-allow governor (manifest Wave 1 `gov.allow`, but needed in
 /// Wave 0 so the stage runs end to end). Ignores scope. Real policy is
 /// [`ScopedGovernor`] and beyond.
 pub struct AllowAll;
+#[async_trait::async_trait]
 impl Governor for AllowAll {
     fn id(&self) -> &str {
         "gov.allow"
     }
-    fn govern(&self, _scope: &Scope, _capability: &str, _args: &Value) -> Verdict {
+    async fn govern(&self, _scope: &Scope, _capability: &str, _args: &Value) -> Verdict {
         Verdict::Allow
     }
 }
@@ -127,12 +129,13 @@ impl ScopedGovernor {
     }
 }
 
+#[async_trait::async_trait]
 impl Governor for ScopedGovernor {
     fn id(&self) -> &str {
         "gov.scoped"
     }
 
-    fn govern(&self, scope: &Scope, capability: &str, _args: &Value) -> Verdict {
+    async fn govern(&self, scope: &Scope, capability: &str, _args: &Value) -> Verdict {
         match self.grants.get(&scope.origin) {
             Some(prefixes) if prefixes.iter().any(|p| Self::prefix_matches(p, capability)) => {
                 Verdict::Allow
@@ -153,9 +156,10 @@ impl Governor for ScopedGovernor {
 /// The `execute` stage plugin slot. Receives a [`Governed`] effect — which by
 /// construction has passed govern — and performs it, returning a result value.
 /// In-process vs RPC is the executor's concern; the loop never knows which.
+#[async_trait::async_trait]
 pub trait Executor: Send + Sync {
     fn id(&self) -> &str;
-    fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError>;
+    async fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError>;
 }
 
 #[derive(Debug, Clone)]
@@ -165,11 +169,12 @@ pub struct ExecError(pub String);
 /// pipeline runs end-to-end in Wave 0. Real executors (`exec.local`,
 /// `exec.docker`) arrive in Waves 1/4.
 pub struct EchoExecutor;
+#[async_trait::async_trait]
 impl Executor for EchoExecutor {
     fn id(&self) -> &str {
         "exec.echo"
     }
-    fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError> {
+    async fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError> {
         Ok(serde_json::json!({ "executed": capability, "args": args }))
     }
 }
@@ -275,11 +280,12 @@ impl<'a> Pipeline<'a> {
     /// ONLY on `Allow`; any other verdict yields an `Err(Rejected(..))`. This is
     /// the structural choke point: execute requires `Governed`, and this is the
     /// sole source of it.
-    pub fn govern(&self, validated: Validated) -> Result<Governed, PipelineError> {
+    pub async fn govern(&self, validated: Validated) -> Result<Governed, PipelineError> {
         let cap = &validated.request.capability;
         let verdict = self
             .governor
-            .govern(&validated.request.scope, cap, &validated.request.args);
+            .govern(&validated.request.scope, cap, &validated.request.args)
+            .await;
         match verdict {
             Verdict::Allow => {
                 self.record("govern", cap, StageStatus::Ok);
@@ -300,9 +306,9 @@ impl<'a> Pipeline<'a> {
     /// Stages 4 & 5 — execute then record. Accepts only a [`Governed`] token, so
     /// it is impossible to call without a passing govern decision. Records
     /// `Effected` on success.
-    pub fn execute(&self, governed: Governed) -> Result<Effected, PipelineError> {
+    pub async fn execute(&self, governed: Governed) -> Result<Effected, PipelineError> {
         let cap = governed.request.capability;
-        match self.executor.execute(&cap, &governed.request.args) {
+        match self.executor.execute(&cap, &governed.request.args).await {
             Ok(result) => {
                 self.record("execute", &cap, StageStatus::Ok);
                 self.events.emit(EventKind::Effected {
@@ -327,15 +333,15 @@ impl<'a> Pipeline<'a> {
     /// The whole pipeline, run in order. This is the only path the loop uses;
     /// the individual stage methods are public so they can be unit-tested and so
     /// the *type-level* proof (execute needs Governed) is visible and exercised.
-    pub fn dispatch(&self, request: EffectRequest) -> Result<Effected, PipelineError> {
+    pub async fn dispatch(&self, request: EffectRequest) -> Result<Effected, PipelineError> {
         self.events.emit(EventKind::DispatchStarted {
             capability: request.capability.clone(),
             correlation: request.correlation.clone(),
         });
         let resolved = self.resolve(request)?;
         let validated = self.validate(resolved)?;
-        let governed = self.govern(validated)?;
-        self.execute(governed)
+        let governed = self.govern(validated).await?;
+        self.execute(governed).await
     }
 
     fn record(&self, stage: &'static str, capability: &str, status: StageStatus) {
@@ -415,19 +421,20 @@ mod tests {
     }
 
     struct DenyAll;
+    #[async_trait::async_trait]
     impl Governor for DenyAll {
         fn id(&self) -> &str {
             "gov.deny"
         }
-        fn govern(&self, _s: &Scope, _c: &str, _a: &Value) -> Verdict {
+        async fn govern(&self, _s: &Scope, _c: &str, _a: &Value) -> Verdict {
             Verdict::Deny {
                 reason: "no".into(),
             }
         }
     }
 
-    #[test]
-    fn happy_path_executes_and_records() {
+    #[tokio::test]
+    async fn happy_path_executes_and_records() {
         let reg = registry_with("alert.raise", serde_json::json!({"type":"object"}));
         let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline {
@@ -443,13 +450,14 @@ mod tests {
                 correlation: None,
                 scope: Scope::system(),
             })
+            .await
             .unwrap();
         assert_eq!(out.capability, "alert.raise");
         stream.shutdown();
     }
 
-    #[test]
-    fn deny_blocks_before_execution() {
+    #[tokio::test]
+    async fn deny_blocks_before_execution() {
         let reg = registry_with("cap.shell", serde_json::json!({"type":"object"}));
         let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline {
@@ -465,13 +473,14 @@ mod tests {
                 correlation: None,
                 scope: Scope::system(),
             })
+            .await
             .unwrap_err();
         assert!(matches!(err, PipelineError::Rejected(_)));
         stream.shutdown();
     }
 
-    #[test]
-    fn unresolved_capability_fails_at_resolve() {
+    #[tokio::test]
+    async fn unresolved_capability_fails_at_resolve() {
         let reg = CapabilityRegistry::new();
         let mut stream = EventStream::spawn(MemorySink::new());
         let p = Pipeline {
@@ -487,13 +496,14 @@ mod tests {
                 correlation: None,
                 scope: Scope::system(),
             })
+            .await
             .unwrap_err();
         assert!(matches!(err, PipelineError::Unresolved { .. }));
         stream.shutdown();
     }
 
-    #[test]
-    fn invalid_args_fail_at_validate() {
+    #[tokio::test]
+    async fn invalid_args_fail_at_validate() {
         let reg = registry_with(
             "cap.fs.write",
             serde_json::json!({"type":"object","required":["path"]}),
@@ -512,6 +522,7 @@ mod tests {
                 correlation: None,
                 scope: Scope::system(),
             })
+            .await
             .unwrap_err();
         match err {
             PipelineError::Invalid { reason, .. } => assert!(reason.contains("path")),
@@ -520,45 +531,47 @@ mod tests {
         stream.shutdown();
     }
 
-    #[test]
-    fn scoped_governor_allows_granted_prefix_and_denies_the_rest() {
+    #[tokio::test]
+    async fn scoped_governor_allows_granted_prefix_and_denies_the_rest() {
         // "skill.summarize" may reach anything under cap.fs and cap.http, nothing else.
         let g = ScopedGovernor::new().grant("skill.summarize", ["cap.fs", "cap.http"]);
         let s = Scope::new("skill.summarize");
         assert!(matches!(
-            g.govern(&s, "cap.fs.read", &Value::Null),
+            g.govern(&s, "cap.fs.read", &Value::Null).await,
             Verdict::Allow
         ));
         assert!(matches!(
-            g.govern(&s, "cap.fs", &Value::Null),
+            g.govern(&s, "cap.fs", &Value::Null).await,
             Verdict::Allow
         ));
         assert!(matches!(
-            g.govern(&s, "cap.http.get", &Value::Null),
+            g.govern(&s, "cap.http.get", &Value::Null).await,
             Verdict::Allow
         ));
         // A sibling that merely shares a textual prefix is NOT a dotted descendant.
         assert!(matches!(
-            g.govern(&s, "cap.fsx", &Value::Null),
+            g.govern(&s, "cap.fsx", &Value::Null).await,
             Verdict::Deny { .. }
         ));
         // Out of grant entirely.
         assert!(matches!(
-            g.govern(&s, "cap.shell", &Value::Null),
+            g.govern(&s, "cap.shell", &Value::Null).await,
             Verdict::Deny { .. }
         ));
     }
 
-    #[test]
-    fn scoped_governor_denies_unknown_origin_by_default() {
+    #[tokio::test]
+    async fn scoped_governor_denies_unknown_origin_by_default() {
         let g = ScopedGovernor::new().grant("persona.assistant", ["cap.fs"]);
         // An origin with no grant entry (e.g. a skill nobody authorized) gets nothing.
-        let v = g.govern(&Scope::new("skill.rogue"), "cap.fs.read", &Value::Null);
+        let v = g
+            .govern(&Scope::new("skill.rogue"), "cap.fs.read", &Value::Null)
+            .await;
         assert!(matches!(v, Verdict::Deny { .. }));
     }
 
-    #[test]
-    fn scope_flows_through_dispatch_and_gates_by_origin() {
+    #[tokio::test]
+    async fn scope_flows_through_dispatch_and_gates_by_origin() {
         // The same capability, dispatched under two different origins, is allowed
         // for the granted one and denied for the other — proving the scope on the
         // EffectRequest reaches the govern stage intact.
@@ -572,20 +585,24 @@ mod tests {
             events: &stream,
         };
 
-        let allowed = p.dispatch(EffectRequest {
-            capability: "cap.fs.read".into(),
-            args: serde_json::json!({}),
-            correlation: None,
-            scope: Scope::new("persona.assistant"),
-        });
+        let allowed = p
+            .dispatch(EffectRequest {
+                capability: "cap.fs.read".into(),
+                args: serde_json::json!({}),
+                correlation: None,
+                scope: Scope::new("persona.assistant"),
+            })
+            .await;
         assert!(allowed.is_ok(), "granted origin should pass govern");
 
-        let denied = p.dispatch(EffectRequest {
-            capability: "cap.fs.read".into(),
-            args: serde_json::json!({}),
-            correlation: None,
-            scope: Scope::new("skill.rogue"),
-        });
+        let denied = p
+            .dispatch(EffectRequest {
+                capability: "cap.fs.read".into(),
+                args: serde_json::json!({}),
+                correlation: None,
+                scope: Scope::new("skill.rogue"),
+            })
+            .await;
         assert!(
             matches!(denied, Err(PipelineError::Rejected(_))),
             "ungranted origin must be rejected at govern"

@@ -13,6 +13,8 @@ categories = ["data-structures"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+async-trait = { workspace = true }
+tokio = { workspace = true }
 
 [[example]]
 name = "walkthrough"

@@ -41,11 +41,12 @@ use crate::schema::{Scope, Value};
 /// The single governed surface a skill / sub-agent holds to reach the world.
 /// Every call is dispatched under the handle's bound scope; the holder cannot
 /// name a different origin or skip a pipeline stage.
+#[async_trait::async_trait]
 pub trait ScopedInvoker {
     /// Invoke a capability. Routes through the full pipeline under the bound
     /// scope; returns the executor's result, or a skill-facing [`InvokeError`]
     /// describing which stage refused.
-    fn invoke(&self, capability: &str, args: &Value) -> Result<Value, InvokeError>;
+    async fn invoke(&self, capability: &str, args: &Value) -> Result<Value, InvokeError>;
 
     /// The origin this invoker acts as. Diagnostic; carries no authority by
     /// itself (the governor's grants decide what the origin may reach).
@@ -142,8 +143,9 @@ impl<'a> PipelineInvoker<'a> {
     }
 }
 
+#[async_trait::async_trait]
 impl<'a> ScopedInvoker for PipelineInvoker<'a> {
-    fn invoke(&self, capability: &str, args: &Value) -> Result<Value, InvokeError> {
+    async fn invoke(&self, capability: &str, args: &Value) -> Result<Value, InvokeError> {
         let req = EffectRequest {
             capability: capability.to_string(),
             args: args.clone(),
@@ -152,6 +154,7 @@ impl<'a> ScopedInvoker for PipelineInvoker<'a> {
         };
         self.pipeline
             .dispatch(req)
+            .await
             .map(|effected| effected.result)
             .map_err(InvokeError::from)
     }
@@ -185,15 +188,17 @@ mod tests {
     /// A stand-in for a skill: it holds ONLY a `&dyn ScopedInvoker` — no pipeline,
     /// no registry, no executor — and can therefore touch the world *only* by
     /// asking. This mirrors what a bridged Python subprocess can express.
-    fn skill_reads_then_writes(inv: &dyn ScopedInvoker) -> Vec<Result<Value, InvokeError>> {
+    async fn skill_reads_then_writes(inv: &dyn ScopedInvoker) -> Vec<Result<Value, InvokeError>> {
         vec![
-            inv.invoke("cap.fs.read", &serde_json::json!({ "path": "notes.md" })),
-            inv.invoke("cap.fs.write", &serde_json::json!({ "path": "out.md" })),
+            inv.invoke("cap.fs.read", &serde_json::json!({ "path": "notes.md" }))
+                .await,
+            inv.invoke("cap.fs.write", &serde_json::json!({ "path": "out.md" }))
+                .await,
         ]
     }
 
-    #[test]
-    fn skill_invokes_are_governed_by_its_bound_scope() {
+    #[tokio::test]
+    async fn skill_invokes_are_governed_by_its_bound_scope() {
         // The skill's origin may reach cap.fs.* but not cap.shell.*.
         let reg = registry_with(&["cap.fs.read", "cap.fs.write", "cap.shell.run"]);
         let gov = ScopedGovernor::new().grant("skill.notetaker", ["cap.fs"]);
@@ -206,13 +211,15 @@ mod tests {
         };
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
 
-        let results = skill_reads_then_writes(&inv);
+        let results = skill_reads_then_writes(&inv).await;
         assert!(results[0].is_ok(), "cap.fs.read is within grant");
         assert!(results[1].is_ok(), "cap.fs.write is within grant");
 
         // The same skill reaching outside its grant is denied at govern — it
         // cannot escape its scope even though the capability is registered.
-        let escalation = inv.invoke("cap.shell.run", &serde_json::json!({ "cmd": "rm -rf /" }));
+        let escalation = inv
+            .invoke("cap.shell.run", &serde_json::json!({ "cmd": "rm -rf /" }))
+            .await;
         assert!(
             matches!(escalation, Err(InvokeError::Denied { .. })),
             "out-of-scope invoke must be denied, got {escalation:?}"
@@ -220,8 +227,8 @@ mod tests {
         stream.shutdown();
     }
 
-    #[test]
-    fn a_sub_invoker_cannot_widen_authority() {
+    #[tokio::test]
+    async fn a_sub_invoker_cannot_widen_authority() {
         // A skill mints a sub-invoker naming a more-privileged origin. Naming it
         // grants nothing: the governor has no entry for "persona.admin" here, so
         // the sub-invoker is denied. Authority lives in the grant table, not in
@@ -238,7 +245,9 @@ mod tests {
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
 
         let forged = inv.sub("persona.admin");
-        let attempt = forged.invoke("cap.shell.run", &serde_json::json!({ "cmd": "id" }));
+        let attempt = forged
+            .invoke("cap.shell.run", &serde_json::json!({ "cmd": "id" }))
+            .await;
         assert!(
             matches!(attempt, Err(InvokeError::Denied { .. })),
             "an unauthorized origin string grants nothing, got {attempt:?}"
@@ -246,8 +255,8 @@ mod tests {
         stream.shutdown();
     }
 
-    #[test]
-    fn unknown_capability_surfaces_as_not_found() {
+    #[tokio::test]
+    async fn unknown_capability_surfaces_as_not_found() {
         let reg = registry_with(&[]);
         let gov = ScopedGovernor::new().grant("skill.x", ["cap"]);
         let mut stream = EventStream::spawn(MemorySink::new());
@@ -258,7 +267,7 @@ mod tests {
             events: &stream,
         };
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.x"));
-        let r = inv.invoke("cap.nope", &serde_json::json!({}));
+        let r = inv.invoke("cap.nope", &serde_json::json!({})).await;
         assert!(matches!(r, Err(InvokeError::NotFound { .. })));
         stream.shutdown();
     }

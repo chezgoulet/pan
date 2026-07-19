@@ -71,15 +71,16 @@ mod tests {
     /// "a hand-written integration test drives a stub provider that emits one
     /// `Invoke`, through an always-allow govern stage, to a stub capability, and
     /// sees the event on the stream."
-    #[test]
-    fn wave0_exit_test() {
+    #[tokio::test]
+    async fn wave0_exit_test() {
         // A stub provider that emits exactly one Invoke and then concludes.
         struct OneInvoke;
+        #[async_trait::async_trait]
         impl Provider for OneInvoke {
             fn id(&self) -> &str {
                 "provider.stub"
             }
-            fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
+            async fn decide(&self, _g: &Goal, _c: &Context, _caps: &[Capability]) -> Decision {
                 Decision {
                     intents: vec![
                         ActionIntent::Invoke {
@@ -131,7 +132,7 @@ mod tests {
             objective: "do the thing".into(),
             trigger: Trigger::Tick { sequence: 1 },
         }));
-        let report = lp.run_span(&mut obs, &Context::default());
+        let report = lp.run_span(&mut obs, &Context::default()).await;
 
         // The effect executed and the span concluded cleanly.
         assert_eq!(report.effected, vec!["stub.cap"]);
@@ -158,8 +159,8 @@ mod tests {
     /// The leak-test thesis, made executable at the crate root: all three
     /// providers are held identically behind the trait. Its compiling IS the
     /// thesis; the assertions just exercise it.
-    #[test]
-    fn all_three_are_interchangeable_behind_the_trait() {
+    #[tokio::test]
+    async fn all_three_are_interchangeable_behind_the_trait() {
         let providers: Vec<Box<dyn Provider>> = vec![
             Box::new(llm::LlmProvider { model: "x".into() }),
             Box::new(behaviortree::BehaviorTreeProvider {
@@ -174,15 +175,15 @@ mod tests {
                 objective: "o".into(),
                 trigger: Trigger::Tick { sequence: 1 },
             };
-            let _d: Decision = p.decide(&g, &Context::default(), &[]);
+            let _d: Decision = p.decide(&g, &Context::default(), &[]).await;
             assert!(!p.id().is_empty());
         }
     }
 
     /// All three providers drive the SAME loop + pipeline with no per-provider
     /// special-casing — the integration-level version of the leak test.
-    #[test]
-    fn all_three_drive_the_same_pipeline() {
+    #[tokio::test]
+    async fn all_three_drive_the_same_pipeline() {
         let mut reg = CapabilityRegistry::new();
         reg.register(Capability {
             id: "cap.state_write".into(),
@@ -247,7 +248,7 @@ mod tests {
                     value: 91.0,
                 },
             }));
-            let report = lp.run_span(&mut obs, &Context::default());
+            let report = lp.run_span(&mut obs, &Context::default()).await;
             assert!(
                 report.end.is_some(),
                 "provider {} produced no terminal state",

@@ -92,12 +92,22 @@ Two more core modules implement ADR 0001:
   Wasm). Don't conflate the two.
 
 The loop (`loop_engine.rs`) runs `observe → decide → enact → commit`. A `Goal`
-carries `id` + `revision`; between *decide* and *enact* the loop re-checks
-supersession. If a newer revision arrived while the provider was deciding, the
-in-flight decision is **discarded unexecuted** and the loop re-decides on the new
-revision (the "abandon-path"). This is the streaming/voice mechanism and is the same
-machinery a future hardware safety veto will reuse — so the veto is a question of
-*who sets the flag*, not new plumbing.
+carries `id` + `revision`. **The core is async** (tokio + `async-trait`; the
+traits are async for dyn-compatibility). The abandon-path is a `tokio::select!`
+(`biased`) race in `run_span` between the provider's `decide` and
+`Observations::superseded`: if a newer revision arrives *mid-decide*, the in-flight
+decide future is **dropped (cancelled) unexecuted** and the loop re-decides on the
+new revision. Both racing futures borrow a per-iteration `snapshot` clone, never
+`current`, so the supersession arm can reassign `current` without a borrow
+conflict. This is the streaming/voice mechanism and the same machinery a future
+hardware safety veto reuses — the veto is a question of *who sets the abandon
+signal*, not new plumbing. `supersession_mid_decide_cancels_the_decide_future`
+proves the cancellation (it counts *completed* decides: exactly one).
+
+**The daemon is still thread-per-perceive** (M7) and bridges to the async core via
+`pan_daemon::block_on` at two seams (`decide`, `dispatch_decision`). Converting the
+daemon's server/session/llm to fully async (dropping the bridge) is the next step;
+see `docs/decisions/0001-scope-invoker-components.md` for status.
 
 Other core modules: `events.rs` (off-thread ordered event stream), `registry.rs`
 (capability registry + lifecycle; a conflict is an error, never last-wins),
@@ -120,8 +130,10 @@ imports, `${VAR}` expansion, and `PAN_`-prefixed overrides).
   capability. (The wire-level `unknown_capability` error is raised earlier, at the
   pipeline's `resolve`/`validate` stage.)
 - **`llm.rs`** — the LLM mind, same `Provider` trait as rules. Targets local plain-HTTP
-  OpenAI-compatible / Ollama-native servers via a tiny std-only HTTP/1.0 client (no
-  TLS, no async, no new deps). **Disabled unless `PAN_LLM_BASE` is set** (e.g.
+  OpenAI-compatible / Ollama-native servers via a tiny std-only, blocking HTTP/1.0
+  client (no TLS). `decide` is `async` (the trait is), but its body is still the
+  blocking client, run on the perceive's own thread via `block_on`; a non-blocking
+  client is a later refinement. **Disabled unless `PAN_LLM_BASE` is set** (e.g.
   `http://127.0.0.1:11434`); `PAN_LLM_MODEL` optionally pins the model. The endpoint
   is probed once at startup; if unreachable, the daemon simply doesn't advertise the
   `llm` mind and llm-minded souls fall back to a Continue-only decision — the game

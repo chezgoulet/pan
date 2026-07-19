@@ -171,7 +171,14 @@ impl Server {
                         let session2 = Arc::clone(&session);
                         let writer2 = Arc::clone(&writer);
                         std::thread::spawn(move || {
-                            let decision = job.provider.decide(&job.goal, &job.context, &job.caps);
+                            // Bridge the async `decide` onto this perceive's own
+                            // thread; a superseded goal is discarded at the enact
+                            // boundary in `finish_perceive`. (ADR 0001, D4.)
+                            let decision = crate::block_on(job.provider.decide(
+                                &job.goal,
+                                &job.context,
+                                &job.caps,
+                            ));
                             let s = lock(&session2);
                             let mut s = s;
                             let outs = s.finish_perceive(&job, decision);

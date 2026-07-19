@@ -41,12 +41,13 @@ pub mod llm {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for LlmProvider {
         fn id(&self) -> &str {
             "provider.llm"
         }
 
-        fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
+        async fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
             let _prompt = self.build_prompt(goal, ctx, caps);
             // <-- real impl: call model with _prompt, parse tool_use blocks.
             // Stubbed deterministic behavior: greet + remember + conclude.
@@ -88,12 +89,13 @@ pub mod behaviortree {
         pub root: Vec<Node>, // ticked in order for this toy version
     }
 
+    #[async_trait::async_trait]
     impl Provider for BehaviorTreeProvider {
         fn id(&self) -> &str {
             "provider.behaviortree"
         }
 
-        fn decide(&self, _goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
+        async fn decide(&self, _goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
             // Pure control flow. No prompt, no tokens, no chat. Emits the exact
             // same ActionIntent::Invoke an LLM would — that's the whole point.
             let mut intents = Vec::new();
@@ -164,12 +166,13 @@ pub mod rules {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for RulesProvider {
         fn id(&self) -> &str {
             "provider.rules"
         }
 
-        fn decide(&self, goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
+        async fn decide(&self, goal: &Goal, _ctx: &Context, _caps: &[Capability]) -> Decision {
             if let Some(r) = self.match_rule(goal) {
                 return Decision {
                     intents: vec![
@@ -207,8 +210,8 @@ mod tests {
         }]
     }
 
-    #[test]
-    fn llm_emits_contract_types_only() {
+    #[tokio::test]
+    async fn llm_emits_contract_types_only() {
         let p = llm::LlmProvider {
             model: "any".into(),
         };
@@ -221,15 +224,15 @@ mod tests {
                 content: "hi".into(),
             },
         };
-        let d = p.decide(&g, &Context::default(), &caps());
+        let d = p.decide(&g, &Context::default(), &caps()).await;
         assert!(d
             .intents
             .iter()
             .any(|i| matches!(i, ActionIntent::Conclude { .. })));
     }
 
-    #[test]
-    fn behavior_tree_emits_identical_invoke_shape() {
+    #[tokio::test]
+    async fn behavior_tree_emits_identical_invoke_shape() {
         let p = behaviortree::BehaviorTreeProvider {
             root: vec![
                 behaviortree::Node::Action {
@@ -245,7 +248,7 @@ mod tests {
             objective: "patrol".into(),
             trigger: Trigger::Tick { sequence: 5 },
         };
-        let d = p.decide(&g, &Context::default(), &[]);
+        let d = p.decide(&g, &Context::default(), &[]).await;
         match &d.intents[0] {
             ActionIntent::Invoke {
                 capability,
@@ -259,8 +262,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rules_invoke_is_the_same_type_as_a_tool_call() {
+    #[tokio::test]
+    async fn rules_invoke_is_the_same_type_as_a_tool_call() {
         let p = rules::RulesProvider {
             rules: vec![rules::Rule {
                 when_signal_over: Some(("temp".into(), 80.0)),
@@ -277,7 +280,7 @@ mod tests {
                 value: 91.0,
             },
         };
-        let d = p.decide(&g, &Context::default(), &caps());
+        let d = p.decide(&g, &Context::default(), &caps()).await;
         assert_eq!(
             d.intents[0],
             ActionIntent::Invoke {
@@ -291,8 +294,8 @@ mod tests {
     /// A `Trigger::Event` with a topic matching a rule's `when_event_topic` MUST
     /// fire that rule's `then_invoke` — the daemon's per-soul event rules depend
     /// on this. Asserts the result is a specific `ActionIntent::Invoke`.
-    #[test]
-    fn event_topic_fires_matching_rule() {
+    #[tokio::test]
+    async fn event_topic_fires_matching_rule() {
         let p = rules::RulesProvider {
             rules: vec![rules::Rule {
                 when_signal_over: None,
@@ -309,7 +312,7 @@ mod tests {
                 payload: serde_json::json!({"saved_by": "player"}),
             },
         };
-        let d = p.decide(&g, &Context::default(), &[]);
+        let d = p.decide(&g, &Context::default(), &[]).await;
         assert_eq!(
             d.intents[0],
             ActionIntent::Invoke {
@@ -329,8 +332,8 @@ mod tests {
 
     /// Non-matching topic → no rule fires → Continue. (Same semantics as the
     /// signal-side no-match path.)
-    #[test]
-    fn event_with_no_matching_rule_falls_through_to_continue() {
+    #[tokio::test]
+    async fn event_with_no_matching_rule_falls_through_to_continue() {
         let p = rules::RulesProvider {
             rules: vec![rules::Rule {
                 when_signal_over: None,
@@ -347,7 +350,7 @@ mod tests {
                 payload: serde_json::json!({}),
             },
         };
-        let d = p.decide(&g, &Context::default(), &[]);
+        let d = p.decide(&g, &Context::default(), &[]).await;
         assert!(d.intents.iter().all(|i| matches!(
             i,
             ActionIntent::Conclude {

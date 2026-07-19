@@ -19,11 +19,12 @@ use pan_core::schema::{
 
 /// A stub provider that emits exactly one Invoke and then concludes.
 struct OneInvoke;
+#[async_trait::async_trait]
 impl Provider for OneInvoke {
     fn id(&self) -> &str {
         "provider.stub"
     }
-    fn decide(
+    async fn decide(
         &self,
         _g: &Goal,
         _ctx: &Context,
@@ -44,8 +45,8 @@ impl Provider for OneInvoke {
     }
 }
 
-#[test]
-fn wave_0_exit() {
+#[tokio::test]
+async fn wave_0_exit() {
     // Register the stub capability so `resolve` binds it.
     let mut reg = CapabilityRegistry::new();
     reg.register(Capability {
@@ -82,7 +83,7 @@ fn wave_0_exit() {
         objective: "do the thing".into(),
         trigger: Trigger::Tick { sequence: 1 },
     }));
-    let report = lp.run_span(&mut obs, &Context::default());
+    let report = lp.run_span(&mut obs, &Context::default()).await;
 
     // The effect executed and the span concluded cleanly.
     assert_eq!(report.effected, vec!["stub.cap"]);

@@ -15,3 +15,9 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Async substrate (ADR 0001, D4 / Phase 0). `async-trait` gives dyn-compatible
+# async trait methods (the pipeline and loop dispatch over `&dyn Governor` /
+# `&dyn Provider`, which native `async fn` in traits cannot do). tokio provides
+# the runtime, `select!` for the cancellable abandon-path, and `time` for tests.
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
