@@ -15,7 +15,7 @@ a Python skill runtime and the Soul Protocol daemon. Everything below is
 This effort added these commits on top of `f16fd15` (each a coherent, green step):
 
 ```
-9578711 pan-llm — TLS transport (rustls), so provider.llm reaches cloud endpoints
+eea59a2 pan-llm — TLS transport (rustls), so provider.llm reaches cloud endpoints
 3601a8f pan-llm — tool-using LLM brain (provider.llm) plugged into the ReAct loop
 9c3c949 agentic tool-use (ReAct) loop — a provider can use a tool, not just name one
 fc818d3 docs: add HANDOFF.md for session continuity
