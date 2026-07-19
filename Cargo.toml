@@ -6,6 +6,7 @@ members = [
     "pan-agent",
     "pan-cap",
     "pan-cli",
+    "pan-llm",
 ]
 resolver = "2"
 

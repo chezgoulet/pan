@@ -30,6 +30,10 @@ pub fn builtin_registry() -> ComponentRegistry {
         Ok(Box::new(crate::command::CommandProvider::new()))
     })
     .expect("unique builtin id");
+    // `provider.llm` — the tool-using LLM brain. Selectable from any Agent.toml;
+    // it only reaches out to a model when a persona actually names it and supplies
+    // a `base`/`model`, so the stock set stays dependency-free at rest.
+    pan_llm::register_llm_providers(&mut reg).expect("unique builtin provider id");
     pan_cap::register_builtin_caps(&mut reg).expect("unique builtin capability ids");
     reg
 }
@@ -93,6 +97,7 @@ mod tests {
         let ids: Vec<&str> = reg.provider_ids().collect();
         assert!(ids.contains(&"provider.rules"));
         assert!(ids.contains(&"provider.behaviortree"));
+        assert!(ids.contains(&"provider.llm"), "the LLM brain is selectable");
     }
 
     #[test]

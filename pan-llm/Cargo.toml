@@ -1,20 +1,17 @@
 [package]
-name = "pan-agent"
+name = "pan-llm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Agent.toml — the manifest and assembler that wire a scoped, config-driven agent from pan-core components (ADR 0001)."
+description = "Tool-using LLM providers (OpenAI-compatible function calling) that plug into pan-core's ReAct loop (ADR 0001)."
 
 [dependencies]
 pan-core = { path = "../pan-core" }
-pan-cap = { path = "../pan-cap" }
-pan-llm = { path = "../pan-llm" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-toml = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true }

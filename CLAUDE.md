@@ -47,6 +47,16 @@ module and never leaks into the core vocabulary.
   capabilities), a rules brain or real LLM just swaps in. Distinct from
   pan-daemon's `pan` binary (`pan serve`). `RunReport.results` carries each
   effect's return value so a channel can show capability output.
+- **`pan-llm/`** — tool-using LLM providers. `provider.llm` is an OpenAI-compatible
+  function-calling brain that rides the core's ReAct loop: it maps the agent's
+  capabilities to the model's `tools`, turns a `tool_calls` reply into governed
+  `Invoke`s (no `Conclude`, so the loop continues), and reads results back off
+  `loop_engine::TOOL_RESULT_CHANNEL`. It is **stateless** — each `decide`
+  reconstructs the full function-calling transcript from the goal + fragments — so
+  a superseded decide leaves nothing behind. Transport is a std-only blocking
+  HTTP/1.0 client (`pan-llm::http`) for local servers; `https` (TLS) is a clear
+  error until that transport lands. Registered into `pan-agent`'s builtin set.
+  Distinct from `pan-daemon/src/llm.rs`, which is single-shot Express for game NPCs.
 
 Per-crate `README.md`s are detailed — read them before deep work. **For session
 continuity, start with [`docs/HANDOFF.md`](docs/HANDOFF.md)** (current status,
@@ -56,7 +66,7 @@ conventions, gotchas, what's next) and [ADR 0001](docs/decisions/0001-scope-invo
 ## Commands
 
 Run from the repo root (workspace-aware) unless noted. CI runs `cargo fmt --all`
-and `cargo clippy --workspace` at the repo root (covers all three crates).
+and `cargo clippy --workspace` at the repo root (covers every crate).
 
 ```sh
 cargo build                                    # whole workspace

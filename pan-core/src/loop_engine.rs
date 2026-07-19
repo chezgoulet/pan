@@ -32,7 +32,8 @@ use crate::schema::{ActionIntent, Context, Decision, Fragment, Goal, Outcome, Pr
 /// for the provider's next reasoning step (the ReAct feedback). It is opaque to
 /// the core — a tool-using provider (e.g. an LLM) reads this channel to see what
 /// its prior `Invoke`s produced; a rules/behavior-tree provider ignores it. Each
-/// fragment body is a JSON object: `{"capability", "correlation"?, "result" | "error"}`.
+/// fragment body is a JSON object recording the whole exchange:
+/// `{"capability", "correlation"?, "args", "result" | "error"}`.
 pub const TOOL_RESULT_CHANNEL: &str = "tool_result";
 
 /// Cap on agentic tool-use steps within a single goal, so a provider that keeps
@@ -265,6 +266,7 @@ impl<'a> Loop<'a> {
                             tool_results.push(tool_result_fragment(
                                 &eff.capability,
                                 correlation.as_deref(),
+                                args,
                                 Ok(&eff.result),
                             ));
                             report.results.push((eff.capability, eff.result));
@@ -275,6 +277,7 @@ impl<'a> Loop<'a> {
                             tool_results.push(tool_result_fragment(
                                 capability,
                                 correlation.as_deref(),
+                                args,
                                 Err(&message),
                             ));
                             self.events.emit(EventKind::PluginError {
@@ -311,12 +314,16 @@ fn pipeline_error_message(err: &PipelineError) -> String {
 }
 
 /// Build the fragment the loop folds back into the working context after an
-/// `Invoke`, on the [`TOOL_RESULT_CHANNEL`]. The body is a compact JSON object a
-/// provider can parse to match the result to the call it made (`correlation`) —
-/// or ignore entirely.
+/// `Invoke`, on the [`TOOL_RESULT_CHANNEL`]. The body is a compact JSON object
+/// recording the whole exchange — the call that was made (`capability`, `args`,
+/// and the provider's `correlation`) and what it produced (`result` or `error`).
+/// Carrying `args` lets a *stateless* tool-using provider reconstruct a faithful
+/// function-calling transcript (the assistant tool-call *and* its result) from
+/// context alone; a rules/BT provider ignores the whole channel.
 fn tool_result_fragment(
     capability: &str,
     correlation: Option<&str>,
+    args: &crate::schema::Value,
     result: Result<&crate::schema::Value, &str>,
 ) -> Fragment {
     let mut body = serde_json::Map::new();
@@ -324,6 +331,7 @@ fn tool_result_fragment(
     if let Some(c) = correlation {
         body.insert("correlation".into(), c.into());
     }
+    body.insert("args".into(), args.clone());
     match result {
         Ok(value) => {
             body.insert("result".into(), value.clone());

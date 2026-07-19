@@ -292,10 +292,40 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   provider stopped precisely at the step cap. This is the keystone the LLM
   provider plugs into: it makes tool-*using* intelligence possible without any
   provider being privileged, since the feedback rides the same opaque `Context`
-  fragments a rules/BT provider simply ignores.
+  fragments a rules/BT provider simply ignores. The fragment body records the
+  whole exchange (`{capability, correlation?, args, result|error}`) — carrying
+  `args` so a *stateless* tool-using provider can rebuild the assistant turn, not
+  just the result.
+
+- **A tool-using LLM brain — `provider.llm` (new crate `pan-llm`).** The payoff
+  of the ReAct loop: a real model that *uses* tools, as an ordinary `Provider`
+  (no chat-shaped types leak into the core). It maps the agent's capabilities to
+  the OpenAI function schema (`cap.state.get` → `cap_state_get`, mapped back on
+  the way in), turns a model `tool_calls` reply into governed `Invoke`s (tool_call
+  id → `correlation`, **no `Conclude`** so the loop continues), and reads the
+  executed results back off `TOOL_RESULT_CHANNEL`. It is **stateless**: each
+  `decide` reconstructs the full function-calling transcript (system, user, then
+  each `assistant(tool_call)` → `tool(result)` pair) from the goal + fragments, so
+  a cancelled decide leaves nothing behind. Transport is a tiny std-only blocking
+  HTTP/1.0 client (`pan-llm::http`) for local OpenAI-compatible servers (Ollama,
+  llama.cpp, LM Studio); `https` is a clear error until the TLS transport lands —
+  that swap is now the *only* thing between this and cloud BYOK, since the
+  tool-use mapping is done and proven. Registered into `pan-agent`'s builtin set,
+  so any `Agent.toml` selects `provider = "provider.llm"` (with `base`/`model`,
+  falling back to `PAN_LLM_*`; a missing endpoint is a load-time error). Tests run
+  with **no network or key**: unit tests cover schema mapping, transcript
+  reconstruction, and response interpretation, and `tests/tool_use.rs` drives the
+  *whole* ReAct cycle — model asks for a tool, the loop executes the governed
+  capability, the model sees the result and answers — against a localhost mock,
+  asserting the second request replays the tool_call and its result.
 
 Pending (next):
 
+- **TLS transport for cloud BYOK** — give `pan-llm::http` an `https` path (a
+  rustls client) so `provider.llm` reaches api.anthropic.com / api.openai.com, not
+  just local servers. The tool-use mapping is already done and proven; this is a
+  transport swap behind the same `post_json` shape. An Anthropic-native message
+  dialect (vs the OpenAI-compatible one) is an optional sibling provider.
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
   launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
   syscalls are denied, not just its unsanctioned Pan calls.
