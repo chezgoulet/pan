@@ -48,7 +48,10 @@ module and never leaks into the core vocabulary.
   pan-daemon's `pan` binary (`pan serve`). `RunReport.results` carries each
   effect's return value so a channel can show capability output.
 
-Per-crate `README.md`s (pan-core, pan-daemon) are detailed — read them before deep work.
+Per-crate `README.md`s are detailed — read them before deep work. **For session
+continuity, start with [`docs/HANDOFF.md`](docs/HANDOFF.md)** (current status,
+conventions, gotchas, what's next) and [ADR 0001](docs/decisions/0001-scope-invoker-components.md)
+(the binding architecture).
 
 ## Commands
 
