@@ -3,6 +3,7 @@ members = [
     "pan-core",
     "pan-daemon",
     "pan-skill",
+    "pan-agent",
 ]
 resolver = "2"
 

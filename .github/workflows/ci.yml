@@ -74,6 +74,19 @@ jobs:
       - name: Tests
         run: cargo test -p pan-skill
 
+  # ─── pan-agent — Agent.toml manifest + assembler ──────────────────
+  pan-agent:
+    name: pan-agent
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build
+        run: cargo build -p pan-agent --all-targets
+      - name: Tests
+        run: cargo test -p pan-agent
+
   # ─── Soul Protocol integration harness ────────────────────────────
   # The cross-repo gate: REACHLOCK's harness drives this repo's real
   # `pan serve` binary through the full Soul Protocol lifecycle and every

@@ -25,6 +25,11 @@ module and never leaks into the core vocabulary.
   `ScopedInvoker` (the governed pipeline). The subprocess holds no capability
   object; its only channel is a newline-JSON invoke↔result protocol + the embedded
   `pan.py` client. Not part of the irreducible core — a component. See ADR 0001, D2.
+- **`pan-agent/`** — `Agent.toml` (the manifest) + the assembler. `AgentManifest`
+  parses one-file-per-instance config; `assemble` builds an `AssembledAgent` (the
+  persona's `Scope`, a `ScopedGovernor` from `[caps.grant]`, and the provider via a
+  `ComponentRegistry`). This is where config becomes a running, scoped graph — the
+  plan's Design Decision #1. `builtin_registry()` is the stock component set.
 
 Per-crate `README.md`s (pan-core, pan-daemon) are detailed — read them before deep work.
 

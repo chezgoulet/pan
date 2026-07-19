@@ -214,6 +214,16 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   governed; OS-level denial of *ambient* fs/network (namespaces/seccomp/`bwrap`)
   plugs into `SkillRunner::with_program` and is not yet enforced.
 
+- **The config model — `Agent.toml` + assembler (Design Decision #1).** New crate
+  `pan-agent`: `AgentManifest` parses the one-file-per-instance manifest, and
+  `assemble` turns it into an `AssembledAgent` — the persona's `Scope`, a
+  `ScopedGovernor` built from `[caps.grant]` (each `family = true` grants
+  `cap.<family>`, deny-by-default), and the provider built through a
+  `ComponentRegistry`. This makes D1 (Scope) and D3 (ComponentRegistry) *real from
+  config* rather than hand-wired: an end-to-end test shows `shell = true` / `fs =
+  false` in TOML gating an actual dispatch. A persona is now one declared concept
+  (authority + voice + brain); an unknown `persona.provider` is a load-time error.
+
 Pending (next):
 
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
