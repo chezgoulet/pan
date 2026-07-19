@@ -48,6 +48,7 @@ fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         provider,
         pipeline: &pipeline,
         events: &stream,
+        scope: Scope::system(),
     };
     let mut obs = Once(Some(Goal {
         id: "demo".into(),

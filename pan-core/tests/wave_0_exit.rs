@@ -14,7 +14,7 @@ use pan_core::loop_engine::{Loop, Once, RunEnd};
 use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline};
 use pan_core::registry::CapabilityRegistry;
 use pan_core::schema::{
-    ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger,
+    ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Scope, Trigger,
 };
 
 /// A stub provider that emits exactly one Invoke and then concludes.
@@ -74,6 +74,7 @@ fn wave_0_exit() {
         provider: &provider,
         pipeline: &pipeline,
         events: &stream,
+        scope: Scope::system(),
     };
     let mut obs = Once(Some(Goal {
         id: "run-1".into(),

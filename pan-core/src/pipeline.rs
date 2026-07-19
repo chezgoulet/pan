@@ -28,15 +28,22 @@
 
 use crate::events::{EventKind, EventStream, StageStatus};
 use crate::registry::CapabilityRegistry;
-use crate::schema::Value;
+use crate::schema::{Scope, Value};
 
-/// A world-effecting request entering the pipeline: a resolved capability id and
-/// its args. Produced by the loop from an `ActionIntent::Invoke`.
+/// A world-effecting request entering the pipeline: a resolved capability id, its
+/// args, and the [`Scope`] on whose authority it is made. Produced by the loop
+/// from an `ActionIntent::Invoke` (stamped with the persona's scope) or by a
+/// [`ScopedInvoker`](crate::invoker::ScopedInvoker) (stamped with a skill's
+/// narrower scope).
 #[derive(Debug, Clone)]
 pub struct EffectRequest {
     pub capability: String,
     pub args: Value,
     pub correlation: Option<String>,
+    /// Who is asking. Carried all the way to the `govern` stage so policy can be
+    /// origin-aware. There is no unscoped path: every effect answers "on whose
+    /// authority?" See ADR 0001.
+    pub scope: Scope,
 }
 
 /// The governance verdict. A plugin in the `govern` family returns one of these.
@@ -50,23 +57,96 @@ pub enum Verdict {
     RequireApproval { reason: String },
 }
 
-/// The `govern` stage plugin slot. It receives a [`Validated`] view and returns
-/// a [`Verdict`]. Crucially it is **never handed the executor** — it cannot
-/// perform an effect, only judge one (synthesis §3).
+/// The `govern` stage plugin slot. It receives the invocation's [`Scope`] (who
+/// is asking), the capability id, and the args, and returns a [`Verdict`].
+/// Crucially it is **never handed the executor** — it cannot perform an effect,
+/// only judge one (synthesis §3). The `scope` parameter is what makes
+/// per-persona sandboxing, skill sub-scopes, and self-modification guards
+/// expressible; see ADR 0001.
 pub trait Governor: Send + Sync {
     fn id(&self) -> &str;
-    fn govern(&self, capability: &str, args: &Value) -> Verdict;
+    fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict;
 }
 
 /// The trivial always-allow governor (manifest Wave 1 `gov.allow`, but needed in
-/// Wave 0 so the stage runs end to end). Replaced by real policy in Wave 4.
+/// Wave 0 so the stage runs end to end). Ignores scope. Real policy is
+/// [`ScopedGovernor`] and beyond.
 pub struct AllowAll;
 impl Governor for AllowAll {
     fn id(&self) -> &str {
         "gov.allow"
     }
-    fn govern(&self, _capability: &str, _args: &Value) -> Verdict {
+    fn govern(&self, _scope: &Scope, _capability: &str, _args: &Value) -> Verdict {
         Verdict::Allow
+    }
+}
+
+/// A capability-scoped governor — the Phase-5 sandboxing shape, usable now.
+///
+/// Each origin is granted a set of allowed capability-id *prefixes*. An
+/// invocation is allowed iff the invoking scope's origin has a grant whose
+/// prefix matches the capability id (exact, or a dotted descendant: grant
+/// `"cap.fs"` allows `"cap.fs"` and `"cap.fs.read"` but not `"cap.fsx"`). An
+/// origin with no grant entry is **denied everything** — deny-by-default.
+///
+/// The boundary lives in configuration (`Agent.toml [caps.grant]`, keyed by
+/// origin), not in the core: this type is the mechanism, the grant map is the
+/// policy. That keeps the core policy-free while making the governor the single,
+/// origin-aware safety boundary the buildout depends on.
+#[derive(Default)]
+pub struct ScopedGovernor {
+    grants: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl ScopedGovernor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Grant `origin` a set of allowed capability-id prefixes. Chainable so a
+    /// governor can be built inline from an `Agent.toml`-derived grant table.
+    pub fn grant(
+        mut self,
+        origin: impl Into<String>,
+        prefixes: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.grants.insert(
+            origin.into(),
+            prefixes.into_iter().map(Into::into).collect(),
+        );
+        self
+    }
+
+    /// True iff `capability` is the granted prefix itself or a dotted descendant
+    /// of it. `"cap.fs"` matches `"cap.fs"` and `"cap.fs.read"`, not `"cap.fsx"`.
+    fn prefix_matches(prefix: &str, capability: &str) -> bool {
+        capability == prefix
+            || capability
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+}
+
+impl Governor for ScopedGovernor {
+    fn id(&self) -> &str {
+        "gov.scoped"
+    }
+
+    fn govern(&self, scope: &Scope, capability: &str, _args: &Value) -> Verdict {
+        match self.grants.get(&scope.origin) {
+            Some(prefixes) if prefixes.iter().any(|p| Self::prefix_matches(p, capability)) => {
+                Verdict::Allow
+            }
+            Some(_) => Verdict::Deny {
+                reason: format!(
+                    "origin `{}` is not granted capability `{capability}`",
+                    scope.origin
+                ),
+            },
+            None => Verdict::Deny {
+                reason: format!("origin `{}` has no capability grants", scope.origin),
+            },
+        }
     }
 }
 
@@ -197,7 +277,9 @@ impl<'a> Pipeline<'a> {
     /// sole source of it.
     pub fn govern(&self, validated: Validated) -> Result<Governed, PipelineError> {
         let cap = &validated.request.capability;
-        let verdict = self.governor.govern(cap, &validated.request.args);
+        let verdict = self
+            .governor
+            .govern(&validated.request.scope, cap, &validated.request.args);
         match verdict {
             Verdict::Allow => {
                 self.record("govern", cap, StageStatus::Ok);
@@ -337,7 +419,7 @@ mod tests {
         fn id(&self) -> &str {
             "gov.deny"
         }
-        fn govern(&self, _c: &str, _a: &Value) -> Verdict {
+        fn govern(&self, _s: &Scope, _c: &str, _a: &Value) -> Verdict {
             Verdict::Deny {
                 reason: "no".into(),
             }
@@ -359,6 +441,7 @@ mod tests {
                 capability: "alert.raise".into(),
                 args: serde_json::json!({"level":"high"}),
                 correlation: None,
+                scope: Scope::system(),
             })
             .unwrap();
         assert_eq!(out.capability, "alert.raise");
@@ -380,6 +463,7 @@ mod tests {
                 capability: "cap.shell".into(),
                 args: serde_json::json!({}),
                 correlation: None,
+                scope: Scope::system(),
             })
             .unwrap_err();
         assert!(matches!(err, PipelineError::Rejected(_)));
@@ -401,6 +485,7 @@ mod tests {
                 capability: "nope".into(),
                 args: Value::Null,
                 correlation: None,
+                scope: Scope::system(),
             })
             .unwrap_err();
         assert!(matches!(err, PipelineError::Unresolved { .. }));
@@ -425,12 +510,86 @@ mod tests {
                 capability: "cap.fs.write".into(),
                 args: serde_json::json!({"wrong":"key"}),
                 correlation: None,
+                scope: Scope::system(),
             })
             .unwrap_err();
         match err {
             PipelineError::Invalid { reason, .. } => assert!(reason.contains("path")),
             other => panic!("expected Invalid, got {other:?}"),
         }
+        stream.shutdown();
+    }
+
+    #[test]
+    fn scoped_governor_allows_granted_prefix_and_denies_the_rest() {
+        // "skill.summarize" may reach anything under cap.fs and cap.http, nothing else.
+        let g = ScopedGovernor::new().grant("skill.summarize", ["cap.fs", "cap.http"]);
+        let s = Scope::new("skill.summarize");
+        assert!(matches!(
+            g.govern(&s, "cap.fs.read", &Value::Null),
+            Verdict::Allow
+        ));
+        assert!(matches!(
+            g.govern(&s, "cap.fs", &Value::Null),
+            Verdict::Allow
+        ));
+        assert!(matches!(
+            g.govern(&s, "cap.http.get", &Value::Null),
+            Verdict::Allow
+        ));
+        // A sibling that merely shares a textual prefix is NOT a dotted descendant.
+        assert!(matches!(
+            g.govern(&s, "cap.fsx", &Value::Null),
+            Verdict::Deny { .. }
+        ));
+        // Out of grant entirely.
+        assert!(matches!(
+            g.govern(&s, "cap.shell", &Value::Null),
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn scoped_governor_denies_unknown_origin_by_default() {
+        let g = ScopedGovernor::new().grant("persona.assistant", ["cap.fs"]);
+        // An origin with no grant entry (e.g. a skill nobody authorized) gets nothing.
+        let v = g.govern(&Scope::new("skill.rogue"), "cap.fs.read", &Value::Null);
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn scope_flows_through_dispatch_and_gates_by_origin() {
+        // The same capability, dispatched under two different origins, is allowed
+        // for the granted one and denied for the other — proving the scope on the
+        // EffectRequest reaches the govern stage intact.
+        let reg = registry_with("cap.fs.read", serde_json::json!({"type":"object"}));
+        let gov = ScopedGovernor::new().grant("persona.assistant", ["cap.fs"]);
+        let mut stream = EventStream::spawn(MemorySink::new());
+        let p = Pipeline {
+            registry: &reg,
+            governor: &gov,
+            executor: &EchoExecutor,
+            events: &stream,
+        };
+
+        let allowed = p.dispatch(EffectRequest {
+            capability: "cap.fs.read".into(),
+            args: serde_json::json!({}),
+            correlation: None,
+            scope: Scope::new("persona.assistant"),
+        });
+        assert!(allowed.is_ok(), "granted origin should pass govern");
+
+        let denied = p.dispatch(EffectRequest {
+            capability: "cap.fs.read".into(),
+            args: serde_json::json!({}),
+            correlation: None,
+            scope: Scope::new("skill.rogue"),
+        });
+        assert!(
+            matches!(denied, Err(PipelineError::Rejected(_))),
+            "ungranted origin must be rejected at govern"
+        );
         stream.shutdown();
     }
 

@@ -70,6 +70,42 @@ pub enum Trigger {
     Signal { name: String, value: f64 },
 }
 
+/// Identity and authority of whoever is driving an invocation through the
+/// dispatch pipeline: *who is asking.* Threaded into the `govern` stage (see
+/// [`crate::pipeline::Governor`]) so governance can be origin-aware — per-persona
+/// sandboxing, skill sub-scopes, self-modification guards — **without the core
+/// knowing any policy.**
+///
+/// The core guarantees only that every dispatched effect carries a `Scope`. What
+/// a scope *permits* is a governor component's decision (its config maps origins
+/// to grants); the core stays policy-free by construction, exactly as the
+/// pipeline's own docs promise ("the correctness of a govern policy … is not
+/// [type-enforced]"). See ADR 0001.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Scope {
+    /// Hierarchical origin id: the persona, skill, meta-agent, or subsystem
+    /// making the call — e.g. `"persona.assistant"`, `"skill.summarize"`,
+    /// `"meta.self-improve"`. The empty string is the anonymous/unattributed
+    /// origin, which a deny-by-default governor rejects.
+    pub origin: String,
+}
+
+impl Scope {
+    /// A scope attributed to the named origin.
+    pub fn new(origin: impl Into<String>) -> Self {
+        Self {
+            origin: origin.into(),
+        }
+    }
+
+    /// The trusted internal origin used by the core's own machinery and by
+    /// tests. A real deployment's governor decides how much (if anything) the
+    /// `"system"` origin may reach — the name carries no inherent privilege.
+    pub fn system() -> Self {
+        Self::new("system")
+    }
+}
+
 /// The slice of world the provider is allowed to see this step. Assembled by the
 /// context family (read-only handles), never written by the provider.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

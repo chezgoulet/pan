@@ -38,7 +38,9 @@ use std::collections::HashMap;
 use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline, PipelineError};
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::registry::CapabilityRegistry;
-use pan_core::schema::{self as v, ActionIntent, Capability, Context, Decision, Goal, Provider};
+use pan_core::schema::{
+    self as v, ActionIntent, Capability, Context, Decision, Goal, Provider, Scope,
+};
 
 use crate::governor::ResolveGovernor;
 use crate::wire::{
@@ -528,7 +530,10 @@ impl Session {
             registry: &self.registry,
         };
         let _ = _g;
-        let outcome = self.dispatch_decision(&decision, &pipeline);
+        // The soul on whose behalf we are enacting is the invocation's origin:
+        // the `govern` stage sees `soul.<id>` and can apply per-soul policy.
+        let scope = Scope::new(format!("soul.{}", job.soul_id));
+        let outcome = self.dispatch_decision(&decision, &pipeline, &scope);
         // Shut the stream down so the consumer thread exits; events were
         // discarded by the sink.
         stream.shutdown();
@@ -569,7 +574,12 @@ impl Session {
     /// (Express and Conclude are not world-effects and pass through). If the
     /// provider's decision had no Conclude, we append `Continue` so the
     /// host's loop reads a well-formed outcome.
-    fn dispatch_decision(&self, decision: &Decision, pipeline: &Pipeline) -> DispatchOutcome {
+    fn dispatch_decision(
+        &self,
+        decision: &Decision,
+        pipeline: &Pipeline,
+        scope: &Scope,
+    ) -> DispatchOutcome {
         let mut out = Vec::new();
         for intent in &decision.intents {
             match intent {
@@ -582,6 +592,7 @@ impl Session {
                         capability: capability.clone(),
                         args: args.clone(),
                         correlation: correlation.clone(),
+                        scope: scope.clone(),
                     };
                     if let Err(e) = pipeline.dispatch(req) {
                         return DispatchOutcome::Failed {

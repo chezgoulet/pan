@@ -26,8 +26,10 @@
 //! capability, and sees the event on the stream.* That test is
 //! [`tests::wave0_exit_test`] below.
 
+pub mod components;
 pub mod events;
 pub mod handles;
+pub mod invoker;
 pub mod loop_engine;
 pub mod pipeline;
 pub mod providers;
@@ -36,18 +38,21 @@ pub mod schema;
 
 // A small, curated public prelude so downstream plugin crates have one import.
 pub mod prelude {
+    pub use crate::components::{ComponentConfig, ComponentError, ComponentRegistry};
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
+    pub use crate::invoker::{InvokeError, PipelineInvoker, ScopedInvoker};
     pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
     pub use crate::pipeline::{
-        AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError, Verdict,
+        AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError,
+        ScopedGovernor, Verdict,
     };
     pub use crate::registry::{
         CapabilityRegistry, ConflictError, Lifecycle, LifecycleError, Plugin, PluginError,
     };
     pub use crate::schema::{
-        ActionIntent, Capability, Context, Decision, Fragment, Goal, Outcome, Provider, Trigger,
-        Value,
+        ActionIntent, Capability, Context, Decision, Fragment, Goal, Outcome, Provider, Scope,
+        Trigger, Value,
     };
 }
 
@@ -59,7 +64,7 @@ mod tests {
     use crate::providers::{behaviortree, llm, rules};
     use crate::registry::CapabilityRegistry;
     use crate::schema::{
-        ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Trigger,
+        ActionIntent, Capability, Context, Decision, Goal, Outcome, Provider, Scope, Trigger,
     };
 
     /// THE WAVE 0 EXIT TEST (build manifest):
@@ -118,6 +123,7 @@ mod tests {
             provider: &provider,
             pipeline: &pipeline,
             events: &stream,
+            scope: Scope::system(),
         };
         let mut obs = Once(Some(Goal {
             id: "run-1".into(),
@@ -230,6 +236,7 @@ mod tests {
                 provider: p.as_ref(),
                 pipeline: &pipeline,
                 events: &stream,
+                scope: Scope::system(),
             };
             let mut obs = Once(Some(Goal {
                 id: "g".into(),

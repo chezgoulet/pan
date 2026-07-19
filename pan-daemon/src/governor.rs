@@ -27,7 +27,7 @@
 
 use pan_core::pipeline::{Governor, Verdict};
 use pan_core::registry::CapabilityRegistry;
-use pan_core::schema::Value;
+use pan_core::schema::{Scope, Value};
 
 /// The daemon's M1 governor. Allow iff the host registered this capability.
 /// Holds a read-only reference to the per-soul capability registry.
@@ -40,7 +40,7 @@ impl<'a> Governor for ResolveGovernor<'a> {
         "gov.daemon.resolve"
     }
 
-    fn govern(&self, capability: &str, _args: &Value) -> Verdict {
+    fn govern(&self, _scope: &Scope, capability: &str, _args: &Value) -> Verdict {
         if self.registry.lookup(capability).is_some() {
             Verdict::Allow
         } else {
@@ -79,7 +79,7 @@ mod tests {
         let r = reg_with(&["npc.move_to"]);
         let g = ResolveGovernor { registry: &r };
         assert!(matches!(
-            g.govern("npc.move_to", &Value::Null),
+            g.govern(&Scope::system(), "npc.move_to", &Value::Null),
             Verdict::Allow
         ));
     }
@@ -88,7 +88,7 @@ mod tests {
     fn unregistered_capability_is_denied_with_explicit_reason() {
         let r = reg_with(&["npc.move_to"]);
         let g = ResolveGovernor { registry: &r };
-        let v = g.govern("npc.fly_ship", &Value::Null);
+        let v = g.govern(&Scope::system(), "npc.fly_ship", &Value::Null);
         match v {
             Verdict::Deny { reason } => {
                 assert!(

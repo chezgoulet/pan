@@ -19,7 +19,7 @@
 
 use crate::events::{EventKind, EventStream};
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::schema::{ActionIntent, Context, Decision, Goal, Outcome, Provider};
+use crate::schema::{ActionIntent, Context, Decision, Goal, Outcome, Provider, Scope};
 
 /// Why a run span ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +77,12 @@ pub struct Loop<'a> {
     pub provider: &'a dyn Provider,
     pub pipeline: &'a Pipeline<'a>,
     pub events: &'a EventStream,
+    /// The authority under which this span's effects are dispatched — the
+    /// persona (or subsystem) driving the loop. Every `Invoke` this span enacts
+    /// is stamped with it, so the `govern` stage sees a consistent origin. A
+    /// skill invoked mid-span narrows this further via its own
+    /// [`ScopedInvoker`](crate::invoker::ScopedInvoker).
+    pub scope: Scope,
 }
 
 impl<'a> Loop<'a> {
@@ -168,6 +174,7 @@ impl<'a> Loop<'a> {
                         capability: capability.clone(),
                         args: args.clone(),
                         correlation: correlation.clone(),
+                        scope: self.scope.clone(),
                     };
                     match self.pipeline.dispatch(req) {
                         Ok(eff) => report.effected.push(eff.capability),
@@ -274,6 +281,7 @@ mod tests {
             provider: &provider,
             pipeline: &pipe,
             events: &stream,
+            scope: Scope::system(),
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
@@ -329,6 +337,7 @@ mod tests {
             provider: &provider,
             pipeline: &pipe,
             events: &stream,
+            scope: Scope::system(),
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -374,6 +383,7 @@ mod tests {
             provider: &provider,
             pipeline: &pipe,
             events: &stream,
+            scope: Scope::system(),
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default());
