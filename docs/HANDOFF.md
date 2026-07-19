@@ -155,6 +155,12 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
 ## What's next (all incremental — the load-bearing architecture is done)
 
+**For the full breadth-and-depth map, see [`ROADMAP.md`](ROADMAP.md)** — every
+remaining area (context/memory, LLM polish, capabilities, skills sandbox +
+self-improvement, daemon async, channels/voice, wasm plugins, observability)
+with entry points, approach, testing, and risks. The short list below is the
+recommended near-term order.
+
 Recommended order; each sits cleanly on what's built:
 
 1. **`provider.llm` is done and cloud-connected** — full tool-use mapping on the
