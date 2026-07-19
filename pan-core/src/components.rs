@@ -23,6 +23,7 @@ use std::collections::HashMap;
 
 use crate::pipeline::{Executor, Governor};
 use crate::schema::{Provider, Value};
+use crate::toolbox::CapabilityProvider;
 
 /// The configuration slice handed to a component factory: the id it was named by
 /// in `Agent.toml`, plus that component's own settings table (already converted
@@ -92,6 +93,7 @@ pub struct ComponentRegistry {
     providers: HashMap<String, Factory<dyn Provider>>,
     governors: HashMap<String, Factory<dyn Governor>>,
     executors: HashMap<String, Factory<dyn Executor>>,
+    capability_providers: HashMap<String, Factory<dyn CapabilityProvider>>,
 }
 
 impl ComponentRegistry {
@@ -161,6 +163,27 @@ impl ComponentRegistry {
         )
     }
 
+    /// Register a [`CapabilityProvider`] factory under `id` (e.g. `"cap.fs"`) —
+    /// a `cap.*` component the toolbox can build from config.
+    pub fn register_capability_provider<F>(
+        &mut self,
+        id: impl Into<String>,
+        factory: F,
+    ) -> Result<(), ComponentError>
+    where
+        F: Fn(&ComponentConfig) -> Result<Box<dyn CapabilityProvider>, ComponentError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        insert_unique(
+            "capability",
+            &mut self.capability_providers,
+            id.into(),
+            Box::new(factory),
+        )
+    }
+
     // --- construction ------------------------------------------------------
 
     /// Build the [`Provider`] configured under `cfg.id`.
@@ -187,10 +210,24 @@ impl ComponentRegistry {
         build("executor", &self.executors, cfg)
     }
 
+    /// Build the [`CapabilityProvider`] configured under `cfg.id`.
+    pub fn build_capability_provider(
+        &self,
+        cfg: &ComponentConfig,
+    ) -> Result<Box<dyn CapabilityProvider>, ComponentError> {
+        build("capability", &self.capability_providers, cfg)
+    }
+
     /// The provider ids this binary knows how to build — for diagnostics and to
     /// validate an `Agent.toml` before instantiating anything.
     pub fn provider_ids(&self) -> impl Iterator<Item = &str> {
         self.providers.keys().map(String::as_str)
+    }
+
+    /// The capability-component ids this binary can build (for `[caps.enable]`
+    /// validation and diagnostics).
+    pub fn capability_ids(&self) -> impl Iterator<Item = &str> {
+        self.capability_providers.keys().map(String::as_str)
     }
 }
 

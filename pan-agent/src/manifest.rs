@@ -65,16 +65,32 @@ pub struct Persona {
     /// Optional provider-specific model id, passed to the provider factory.
     #[serde(default)]
     pub model: Option<String>,
+    /// Any other `[persona]` keys — provider-specific settings passed verbatim to
+    /// the provider factory (e.g. a rules provider's `rules` array). This is how a
+    /// provider gets its configuration without the manifest hard-coding a shape.
+    #[serde(flatten)]
+    pub settings: BTreeMap<String, toml::Value>,
 }
 
-/// `[caps]` — the persona's authority. `grant` is a friendly per-family switch;
-/// each `<family> = true` grants the capability-id prefix `cap.<family>` (so
-/// `shell = true` admits `cap.shell`, `cap.shell.run`, …). Deny-by-default: a
-/// family that is `false` or absent is not granted.
+/// `[caps]` — the persona's capabilities: which components exist (`enable`),
+/// their per-component config (`settings`), and what authority the persona has
+/// over them (`grant`).
+///
+/// - `grant` is a friendly per-family switch: each `<family> = true` grants the
+///   capability-id prefix `cap.<family>` (so `shell = true` admits `cap.shell`,
+///   `cap.shell.run`, …). Deny-by-default.
+/// - `enable` lists the capability-component ids to load into the toolbox (what
+///   *exists*), e.g. `["cap.state", "cap.fs"]`.
+/// - `settings` is per-component config keyed by id, e.g.
+///   `[caps.settings."cap.fs"] root = "…"`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Caps {
     #[serde(default)]
     pub grant: BTreeMap<String, bool>,
+    #[serde(default)]
+    pub enable: Vec<String>,
+    #[serde(default)]
+    pub settings: BTreeMap<String, toml::Value>,
 }
 
 impl AgentManifest {

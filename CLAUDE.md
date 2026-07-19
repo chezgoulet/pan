@@ -26,10 +26,13 @@ module and never leaks into the core vocabulary.
   object; its only channel is a newline-JSON invoke↔result protocol + the embedded
   `pan.py` client. Not part of the irreducible core — a component. See ADR 0001, D2.
 - **`pan-agent/`** — `Agent.toml` (the manifest) + the assembler. `AgentManifest`
-  parses one-file-per-instance config; `assemble` builds an `AssembledAgent` (the
-  persona's `Scope`, a `ScopedGovernor` from `[caps.grant]`, and the provider via a
-  `ComponentRegistry`). This is where config becomes a running, scoped graph — the
-  plan's Design Decision #1. `builtin_registry()` is the stock component set.
+  parses one-file-per-instance config; `assemble` builds an `AssembledAgent`
+  carrying everything a loop needs: the persona's `Scope`, a `ScopedGovernor` from
+  `[caps.grant]`, the provider (via `ComponentRegistry`), and a `Toolbox` from
+  `[caps.enable]` (the pipeline's capability registry + executor). One `Agent.toml`
+  → a running, governed agent (the capstone test writes a real file from config).
+  The plan's Design Decision #1. `builtin_registry()` is the stock component set
+  (pan-core providers + pan-cap's `cap.state`/`cap.fs`).
 - **`pan-cap/`** — concrete `cap.*` components: `cap.state` (in-memory KV) and
   `cap.fs` (rooted file access, path-jailed). Each is a `CapabilityProvider`; a
   `pan-core::toolbox::Toolbox` composes them into the pipeline's capability

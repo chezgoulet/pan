@@ -18,39 +18,57 @@ persona = "assistant"          # also the governance origin: persona.assistant
 [persona]
 instruction = "You are a helpful agent running in a terminal."
 provider = "provider.rules"    # a ComponentRegistry id
-model = "claude-sonnet-4-6"    # optional, provider-specific
+# ...any other [persona] keys are passed to the provider factory (e.g. a rules array)
+
+[caps]
+enable = ["cap.state", "cap.fs"]  # which capability components exist (the toolbox)
 
 [caps.grant]                    # deny-by-default; each true family grants cap.<family>
-shell = true
-fs = false
-http = true
-memory = true
+fs = true
+state = true
+
+[caps.settings."cap.fs"]        # per-component config
+root = "/var/lib/pan/agent-root"
 ```
 
 A **persona** is one concept: the capabilities the agent may invoke, the voice it
-follows, and the provider that drives it. Assembling it yields:
+follows, and the provider that drives it. Assembling it yields an `AssembledAgent`
+carrying *everything a loop needs*:
 
 - a `Scope` (`persona.assistant`) — the authority every effect is stamped with;
-- a `ScopedGovernor` built from `[caps.grant]` — `shell`/`http`/`memory` granted,
-  `fs` denied, everything else denied;
-- the `Provider` named by `persona.provider`, built through the
-  `ComponentRegistry` (an unknown id is a load-time error, not a late surprise).
+- a `ScopedGovernor` built from `[caps.grant]` — deny-by-default;
+- the `Provider` named by `persona.provider`, built through the `ComponentRegistry`;
+- a `Toolbox` of the `[caps.enable]` components — the pipeline's capability registry
+  (`toolbox.registry()`) *and* its executor (`&toolbox`).
+
+An unknown provider or capability id, or `cap.fs` without a `root`, is a load-time
+error — not a late surprise.
 
 ## The payoff
 
-Config becomes enforcement with no hand-wiring. From the tests: an agent
-assembled from the manifest above dispatches `cap.shell.run` (allowed) and
-`cap.fs.read` (denied at `govern`) purely because of what `[caps.grant]` said.
+One `Agent.toml` becomes a running, governed agent. The capstone test assembles a
+manifest (a rules brain + enabled, rooted `cap.fs` + an `fs` grant), drives one
+loop span, and a **real file appears on disk** — config to running agent, no
+hand-wiring.
 
 ```rust
 use pan_agent::{assemble_toml, builtin_registry};
+use pan_core::pipeline::Pipeline;
 
 let agent = assemble_toml(agent_toml, &builtin_registry())?;
-// agent.scope, agent.governor, agent.provider — ready to wire into a Pipeline/Loop.
+let registry = agent.toolbox.registry();
+let pipeline = Pipeline {
+    registry: &registry,
+    governor: &agent.governor,
+    executor: &agent.toolbox,   // the toolbox IS the executor
+    events: &stream,
+};
+// ...drive a Loop with agent.provider under agent.scope.
 ```
 
 `builtin_registry()` is the component set a stock binary ships with (the pan-core
-providers today); a deployment registers its own components on top.
+providers plus pan-cap's `cap.state` / `cap.fs`); a deployment registers its own
+components on top.
 
 ## Run it
 

@@ -9,11 +9,17 @@
 
 use pan_core::components::{ComponentConfig, ComponentError, ComponentRegistry};
 use pan_core::pipeline::ScopedGovernor;
+use pan_core::registry::ConflictError;
 use pan_core::schema::{Provider, Scope, Value};
+use pan_core::toolbox::Toolbox;
 
 use crate::manifest::{AgentManifest, ManifestError};
 
 /// A fully-wired agent: everything a loop/pipeline needs, built from config.
+///
+/// The four pieces compose directly: `toolbox.registry()` is the pipeline's
+/// capability registry, `&toolbox` is its executor, `governor` is its govern
+/// stage, and `provider` + `scope` drive the loop.
 pub struct AssembledAgent {
     /// The agent instance name (`meta.name`).
     pub name: String,
@@ -26,6 +32,9 @@ pub struct AssembledAgent {
     pub governor: ScopedGovernor,
     /// The provider component named by `persona.provider`.
     pub provider: Box<dyn Provider>,
+    /// The capability components from `[caps.enable]`: the pipeline's capability
+    /// registry (via [`Toolbox::registry`]) and its executor (`&toolbox`).
+    pub toolbox: Toolbox,
 }
 
 /// Assemble an agent from its manifest, building components out of `registry`.
@@ -39,8 +48,8 @@ pub fn assemble(
     let governor = ScopedGovernor::new().grant(origin.clone(), manifest.granted_prefixes());
 
     // Provider: built via the registry from the persona's id + settings. The
-    // settings carry the instruction and (optional) model, plus anything else a
-    // provider factory looks for.
+    // settings carry the instruction and (optional) model, plus any other
+    // `[persona]` keys a provider factory looks for (e.g. a rules array).
     let mut settings = serde_json::Map::new();
     settings.insert(
         "instruction".into(),
@@ -49,10 +58,32 @@ pub fn assemble(
     if let Some(model) = &manifest.persona.model {
         settings.insert("model".into(), Value::String(model.clone()));
     }
+    for (key, value) in &manifest.persona.settings {
+        settings.insert(key.clone(), toml_to_json(value));
+    }
     let cfg = ComponentConfig::new(manifest.persona.provider.clone(), Value::Object(settings));
     let provider = registry
         .build_provider(&cfg)
         .map_err(AssembleError::Provider)?;
+
+    // Toolbox: the capability components the persona enables, each with its own
+    // `[caps.settings."cap.x"]` config. This is what the agent can actually *do*.
+    let mut toolbox = Toolbox::new();
+    for id in &manifest.caps.enable {
+        let cap_settings = manifest
+            .caps
+            .settings
+            .get(id)
+            .map(toml_to_json)
+            .unwrap_or(Value::Null);
+        let cfg = ComponentConfig::new(id.clone(), cap_settings);
+        let component = registry
+            .build_capability_provider(&cfg)
+            .map_err(AssembleError::Capability)?;
+        toolbox
+            .add(component)
+            .map_err(AssembleError::CapabilityConflict)?;
+    }
 
     Ok(AssembledAgent {
         name: manifest.meta.name.clone(),
@@ -60,7 +91,15 @@ pub fn assemble(
         scope: Scope::new(origin),
         governor,
         provider,
+        toolbox,
     })
+}
+
+/// Convert a TOML value (from the manifest) into the core `Value` the component
+/// factories consume. TOML and JSON share the same data model here, so this is a
+/// faithful re-serialization.
+fn toml_to_json(value: &toml::Value) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 /// Parse an `Agent.toml` and assemble it in one step.
@@ -77,8 +116,13 @@ pub fn assemble_toml(
 pub enum AssembleError {
     /// The manifest itself was bad (parse / validation).
     Manifest(ManifestError),
-    /// A named component could not be built (unknown id, or bad settings).
+    /// The provider component could not be built (unknown id, or bad settings).
     Provider(ComponentError),
+    /// An enabled capability component could not be built (unknown id, or bad
+    /// settings — e.g. `cap.fs` without a `root`).
+    Capability(ComponentError),
+    /// Two enabled capability components claimed the same capability id.
+    CapabilityConflict(ConflictError),
 }
 
 impl std::fmt::Display for AssembleError {
@@ -86,6 +130,8 @@ impl std::fmt::Display for AssembleError {
         match self {
             AssembleError::Manifest(e) => write!(f, "{e}"),
             AssembleError::Provider(e) => write!(f, "assembling provider: {e}"),
+            AssembleError::Capability(e) => write!(f, "assembling capability: {e}"),
+            AssembleError::CapabilityConflict(e) => write!(f, "capability conflict: {e}"),
         }
     }
 }

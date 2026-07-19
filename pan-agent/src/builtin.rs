@@ -11,15 +11,18 @@ use pan_core::providers::behaviortree::{BehaviorTreeProvider, Node};
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::schema::{Provider, Value};
 
-/// Build the registry of components this binary knows how to construct.
+/// Build the registry of components a stock `pan` binary knows how to construct:
+/// the pan-core providers, plus the `pan-cap` capability components (`cap.state`,
+/// `cap.fs`). A deployment registers its own components on top.
 pub fn builtin_registry() -> ComponentRegistry {
     let mut reg = ComponentRegistry::new();
     // These registrations are internal and fixed, so the conflict errors cannot
-    // fire; unwrap documents that.
+    // fire; expect documents that.
     reg.register_provider("provider.rules", build_rules)
         .expect("unique builtin id");
     reg.register_provider("provider.behaviortree", build_behaviortree)
         .expect("unique builtin id");
+    pan_cap::register_builtin_caps(&mut reg).expect("unique builtin capability ids");
     reg
 }
 

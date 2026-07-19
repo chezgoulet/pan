@@ -9,6 +9,7 @@ description = "Agent.toml — the manifest and assembler that wire a scoped, con
 
 [dependencies]
 pan-core = { path = "../pan-core" }
+pan-cap = { path = "../pan-cap" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"

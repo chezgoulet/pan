@@ -237,11 +237,21 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   govern and the file is left untouched, and a granted persona still cannot escape
   its fs root.
 
+- **The arc closed — `Agent.toml` → a fully runnable agent.** `ComponentRegistry`
+  gained a capability-provider factory family; `pan-cap` registers its components
+  (`register_builtin_caps`); the manifest grew `[caps.enable]` (which components
+  exist), `[caps.settings."cap.x"]` (per-component config, e.g. `cap.fs`'s root),
+  and pass-through `[persona]` settings (a provider's own config, e.g. a rules
+  array). `assemble` now also builds the persona's `Toolbox`, so an
+  `AssembledAgent` carries *everything a loop needs* — scope, governor, provider,
+  and toolbox (registry + executor). The capstone test proves it: one Agent.toml
+  (a rules brain + enabled, rooted `cap.fs` + an `fs` grant) assembles and drives
+  one loop span that writes a **real file** — config to running agent, no
+  hand-wiring. Enabling an unknown capability, or `cap.fs` without a root, is a
+  load-time error.
+
 Pending (next):
 
-- **Wire the toolbox into `Agent.toml`/assemble** — a `[caps.enable]`-style list so
-  a persona's toolbox (its registry + executor) is built from config alongside its
-  governor and provider, completing the config-to-running-agent path.
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
   launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
   syscalls are denied, not just its unsanctioned Pan calls.
