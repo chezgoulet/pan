@@ -4,6 +4,7 @@ members = [
     "pan-daemon",
     "pan-skill",
     "pan-agent",
+    "pan-cap",
 ]
 resolver = "2"
 

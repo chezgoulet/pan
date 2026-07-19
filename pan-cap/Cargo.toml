@@ -1,0 +1,19 @@
+[package]
+name = "pan-cap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Concrete capability components (cap.state, cap.fs) that plug into pan-core's Toolbox (ADR 0001)."
+
+[dependencies]
+pan-core = { path = "../pan-core" }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

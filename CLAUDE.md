@@ -30,6 +30,11 @@ module and never leaks into the core vocabulary.
   persona's `Scope`, a `ScopedGovernor` from `[caps.grant]`, and the provider via a
   `ComponentRegistry`). This is where config becomes a running, scoped graph — the
   plan's Design Decision #1. `builtin_registry()` is the stock component set.
+- **`pan-cap/`** — concrete `cap.*` components: `cap.state` (in-memory KV) and
+  `cap.fs` (rooted file access, path-jailed). Each is a `CapabilityProvider`; a
+  `pan-core::toolbox::Toolbox` composes them into the pipeline's capability
+  registry + executor (`exec.local`). This is what lets an assembled agent *do*
+  things — the governor decides *whether*, these components are *what runs*.
 
 Per-crate `README.md`s (pan-core, pan-daemon) are detailed — read them before deep work.
 

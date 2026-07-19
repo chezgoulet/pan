@@ -35,6 +35,7 @@ pub mod pipeline;
 pub mod providers;
 pub mod registry;
 pub mod schema;
+pub mod toolbox;
 
 // A small, curated public prelude so downstream plugin crates have one import.
 pub mod prelude {
@@ -54,6 +55,7 @@ pub mod prelude {
         ActionIntent, Capability, Context, Decision, Fragment, Goal, Outcome, Provider, Scope,
         Trigger, Value,
     };
+    pub use crate::toolbox::{CapabilityProvider, Toolbox};
 }
 
 #[cfg(test)]

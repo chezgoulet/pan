@@ -224,8 +224,24 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   false` in TOML gating an actual dispatch. A persona is now one declared concept
   (authority + voice + brain); an unknown `persona.provider` is a load-time error.
 
+- **The executor/capability model — `Toolbox` + concrete `cap.*` components.**
+  pan-core gains `CapabilityProvider` (a component that declares + executes
+  capabilities) and `Toolbox` (the plan's `exec.local`: it composes many
+  providers, builds the merged `CapabilityRegistry` the pipeline resolves against,
+  and *is* the `Executor`, routing each capability to its owner; collisions are
+  conflict errors). New crate `pan-cap` supplies real components: `cap.state` (an
+  in-memory KV) and `cap.fs` (rooted file access, with executor-level path jailing
+  as defense in depth). This is the missing link between an *assembled* agent and
+  a *doing* agent: end-to-end tests drive a provider → loop → govern → real
+  `cap.fs.write`, writing an actual file, while an ungranted origin is denied at
+  govern and the file is left untouched, and a granted persona still cannot escape
+  its fs root.
+
 Pending (next):
 
+- **Wire the toolbox into `Agent.toml`/assemble** — a `[caps.enable]`-style list so
+  a persona's toolbox (its registry + executor) is built from config alongside its
+  governor and provider, completing the config-to-running-agent path.
 - **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
   launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
   syscalls are denied, not just its unsanctioned Pan calls.
