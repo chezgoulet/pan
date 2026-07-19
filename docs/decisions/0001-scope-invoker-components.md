@@ -200,9 +200,25 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   stays thread-per-perceive and bridges via `pan_daemon::block_on` at its two
   async seams (`decide`, `dispatch_decision`); Soul Protocol conformance (19)
   unchanged.
+- **The subprocess transport — a working Python skill runtime.** New crate
+  `pan-skill` (kept out of the irreducible core: the subprocess runtime is a
+  component, not core). `SkillRunner` spawns a skill as a `python3` subprocess and
+  services each capability it invokes through a `ScopedInvoker` — the full
+  governed pipeline, under the skill's bound scope. The subprocess holds no Pan
+  capability object; its only sanctioned channel is a newline-JSON invoke ↔ result
+  protocol over stdin/stdout, and it `import pan` (an embedded ~1-page client).
+  Async throughout, `kill_on_drop`, stderr captured for tracebacks. Four
+  end-to-end tests spawn real `python3`, including the crux: an out-of-scope
+  invoke surfaces as `PanDenied` **inside the subprocess** — governance crosses
+  the process boundary. Honest scope: this guarantees all *sanctioned* I/O is
+  governed; OS-level denial of *ambient* fs/network (namespaces/seccomp/`bwrap`)
+  plugs into `SkillRunner::with_program` and is not yet enforced.
 
 Pending (next):
 
+- **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
+  launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
+  syscalls are denied, not just its unsanctioned Pan calls.
 - **Fully async daemon** — drop the `block_on` bridge: convert `server.rs` (TCP
   loopback) and `session.rs` to tokio, and give `llm.rs` a non-blocking client.
   Only then does one slow soul stop occupying a whole OS thread.
@@ -210,6 +226,5 @@ Pending (next):
   daemon's `ResolveGovernor<'a>` borrows the capability registry, so this is a
   real lifetime restructuring (build components into session-owned storage), not
   a mechanical swap — Phase 2 work, done with care.
-- **Subprocess transport** for `ScopedInvoker` (JSON-lines over stdin/stdout to
-  `python3`); now that a blocked skill can be a suspended future, no thread per
-  skill is needed for the common path.
+- **`skill.*` lifecycle capabilities** (`skill.create/edit/list/delete`) wrapping
+  the runner — the Phase-7 management surface, itself governed.

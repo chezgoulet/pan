@@ -26,13 +26,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # Workspace-wide: fmt + clippy cover pan-core, pan-daemon, and pan-skill.
       - name: Format
         run: cargo fmt --all --check
-        working-directory: pan-core
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: pan-core
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   # ─── Wave 0 — core substrate ──────────────────────────────────────
   wave-0:
@@ -58,6 +57,22 @@ jobs:
 
       - name: Build all targets
         run: cargo build --all-targets
+
+  # ─── pan-skill — the Python skill runtime ─────────────────────────
+  # Builds + tests the governed subprocess bridge. The integration tests
+  # spawn real `python3` skills (present on ubuntu runners); they skip
+  # gracefully if python3 is ever absent.
+  pan-skill:
+    name: pan-skill
+    needs: [wave-0]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build
+        run: cargo build -p pan-skill --all-targets
+      - name: Tests
+        run: cargo test -p pan-skill
 
   # ─── Soul Protocol integration harness ────────────────────────────
   # The cross-repo gate: REACHLOCK's harness drives this repo's real

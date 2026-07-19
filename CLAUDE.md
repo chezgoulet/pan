@@ -20,13 +20,18 @@ module and never leaks into the core vocabulary.
   plugins live here, only stubs needed to drive the core end-to-end.
 - **`pan-daemon/`** — the Soul Protocol server (`pan` binary). Speaks the protocol
   over TCP loopback NDJSON, hosts souls, decides, ships decisions back to the host.
+- **`pan-skill/`** — the Python skill runtime. `SkillRunner` spawns a skill as a
+  `python3` subprocess and services each capability it invokes through a
+  `ScopedInvoker` (the governed pipeline). The subprocess holds no capability
+  object; its only channel is a newline-JSON invoke↔result protocol + the embedded
+  `pan.py` client. Not part of the irreducible core — a component. See ADR 0001, D2.
 
-Per-crate `README.md`s are detailed and current — read them before deep work.
+Per-crate `README.md`s (pan-core, pan-daemon) are detailed — read them before deep work.
 
 ## Commands
 
-Run from the repo root (workspace-aware) unless noted. CI runs `cargo fmt`/`cargo
-clippy` with the working directory set to `pan-core`.
+Run from the repo root (workspace-aware) unless noted. CI runs `cargo fmt --all`
+and `cargo clippy --workspace` at the repo root (covers all three crates).
 
 ```sh
 cargo build                                    # whole workspace
