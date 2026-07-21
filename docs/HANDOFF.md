@@ -8,13 +8,18 @@ the always-loaded orientation is [`/CLAUDE.md`](../CLAUDE.md). Read both first._
 
 Pan is a **runnable, governed, interactive, tool-using agent assembled from
 `Agent.toml`** — with a real LLM brain (`provider.llm`) that *uses* tools — plus
-a Python skill runtime and the Soul Protocol daemon. Everything below is
-**green**: 159 tests, workspace `fmt` + `clippy -D warnings` clean, the four
-`pan-core` compile-fail guards hold, and Soul Protocol conformance is 19/19.
+an OpenAI-compatible HTTP gateway, a Python skill runtime, and the Soul Protocol
+daemon. Everything below is **green**: 191 tests, workspace `fmt` + `clippy -D
+warnings` clean, the four `pan-core` compile-fail guards hold, and Soul Protocol
+conformance is 19/19.
+
+Sprints 1–6 are substantially landed (this commit is a crash-recovery
+consolidation; the branch was left with unstaged work after an OS crash).
 
 This effort added these commits on top of `f16fd15` (each a coherent, green step):
 
 ```
+6c1e6da Sprint 1-6 consolidation — gateway, async daemon, capabilities, providers, sandbox
 eea59a2 pan-llm — TLS transport (rustls), so provider.llm reaches cloud endpoints
 3601a8f pan-llm — tool-using LLM brain (provider.llm) plugged into the ReAct loop
 9c3c949 agentic tool-use (ReAct) loop — a provider can use a tool, not just name one
@@ -42,7 +47,7 @@ The ADR's four decisions (D1–D4) are all landed. See the ADR's
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo test --workspace                              # 159 tests
+cargo test --workspace                              # 191 tests
 cargo fmt --all --check                             # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
@@ -70,17 +75,18 @@ state = true
 path = "memory.json"
 ```
 
-## Crate map (7 crates)
+## Crate map (8 crates)
 
 | Crate | Role | Notes |
 |---|---|---|
-| `pan-core` | vocabulary, async pipeline/loop, Scope, ScopedInvoker, ComponentRegistry, Toolbox | the irreducible core; async via `async-trait`; type-state `Governed` invariant intact; ReAct loop + `TOOL_RESULT_CHANNEL` |
-| `pan-daemon` | Soul Protocol server (`pan serve`) | thread-per-perceive; bridges to async core via `pan_daemon::block_on`; conformance 19/19; has its own single-shot local `llm.rs` |
-| `pan-skill` | Python skill runtime | `SkillRunner` spawns `python3`, services `cap.invoke` through a `ScopedInvoker`; `pan.py` embedded |
-| `pan-agent` | `Agent.toml` manifest + assembler | `assemble` → `AssembledAgent { scope, governor, provider, toolbox }`; `builtin_registry()`; providers `echo`/`command`/`rules`/`behaviortree`/`llm` |
-| `pan-cap` | `cap.*` components | `cap.state` (KV, optionally file-backed), `cap.fs` (rooted, path-jailed), `cap.shell` (direct exec) |
-| `pan-cli` | interactive REPL | `run_session`; the `pan-agent` binary (distinct from daemon's `pan`) |
-| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling mapped onto the ReAct loop; stateless transcript rebuild; std-only HTTP/1.0 over plain **or** rustls TLS (local + cloud BYOK) |
+| `pan-core` | vocabulary, async pipeline/loop, Scope, ScopedInvoker, ComponentRegistry, Toolbox | the irreducible core; async via `async-trait`; type-state `Governed` invariant intact; ReAct loop + `TOOL_RESULT_CHANNEL`; `HostAllowlistGovernor` for `cap.http` URL policy; `Pipeline::execute_with_invoker` for cross-capability execution; `PipelineInvoker::sub()` for delegation |
+| `pan-daemon` | Soul Protocol server (`pan serve`) | **fully async** (tokio TcpListener, tokio::spawn per perceive, AsyncBufReadExt/AsyncWriteExt framing); conformance 19/19; has its own single-shot local `llm.rs` |
+| `pan-skill` | Python skill runtime + OS sandbox | `SkillRunner` spawns `python3`, services `cap.invoke` through a `ScopedInvoker`; `pan.py` embedded; `bwrap` sandbox (namespace isolation, cap-drop ALL, graceful fallback) |
+| `pan-agent` | `Agent.toml` manifest + assembler | `assemble` → `AssembledAgent { scope, governor, provider, toolbox }`; `builtin_registry()`; providers `echo`/`command`/`rules`/`behaviortree`/`llm`/`anthropic` |
+| `pan-cap` | `cap.*` components | `cap.state` (KV, file-backed), `cap.fs` (rooted, path-jailed: read/write/list/glob/search), `cap.shell` (direct exec), `cap.http` (GET/POST, blocking TCP), `cap.time` (ISO 8601 now/today), `cap.skill` (create/edit/list/delete/run lifecycle) |
+| `pan-cli` | interactive REPL | `run_session` with cross-span conversation history (injects `history` channel fragment); the `pan-agent` binary (distinct from daemon's `pan`) |
+| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling on the ReAct loop; stateless transcript rebuild; retry/backoff on 429/5xx; std-only HTTP/1.0 over plain **or** rustls TLS (local + cloud BYOK); `provider.anthropic`: native Messages API |
+| `pan-gateway` | HTTP gateway (`pan-gateway` binary) | axum server: OpenAI-compatible `/v1/chat/completions`, Pan-native `/v1/agents/:name/goals`, agent delegation, streaming SSE, atomic metrics, Bearer-token auth; `AgentPool` loads from directory of `Agent.toml` files |
 
 ## The through-line (so the mental model transfers)
 
@@ -121,12 +127,16 @@ Pipeline + Loop → governed capability runs.**
   `cargo metadata`), not `pan-core/target` (which is a stale standalone build).
   It treats rustc error-code drift as a WARNING (e.g. `handle_downcast` reports
   E0425 now, not the cited E0412) and only fails on a bypass that *compiles*.
-- **Two binaries named differently**: `pan` (pan-daemon, `pan serve`) and
-  `pan-agent` (pan-cli, `pan-agent run`). Don't make a second `pan` — output paths
-  would collide. The cross-repo CI harness builds pan-daemon's `--bin pan`.
-- **The daemon is not fully async**: it bridges to the async core with
-  `pan_daemon::block_on` at two seams (`decide`, `dispatch_decision`). Dropping
-  that bridge (fully-async server/session, non-blocking LLM client) is pending.
+- **Three binaries now**: `pan` (pan-daemon, `pan serve`), `pan-agent` (pan-cli,
+  `pan-agent run`), and `pan-gateway` (pan-gateway, `pan-gateway serve`). Output
+  paths don't collide — each crate has a distinct binary name. The cross-repo CI
+  harness builds pan-daemon's `--bin pan`.
+- **The daemon is now fully async**: tokio TcpListener, `tokio::spawn` per
+  perceive, async read/write framing. The `block_on` bridge is gone from the
+  server path; it remains only in the synchronous `on_perceive` fallback (used
+  by tests). The daemon's `llm.rs` still uses a blocking client on the tokio
+  thread — replacing it with a non-blocking one (or reusing `pan-llm`) is a
+  future refinement.
 - **`RunReport.results`** is an additive field: `(capability, return-value)` per
   executed effect, surfaced synchronously (don't read the off-thread event stream
   per-turn — it races). The CLI renders it.
@@ -153,27 +163,31 @@ Pipeline + Loop → governed capability runs.**
 Adding a **provider** is the same shape against `pan_core::schema::Provider`,
 registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
-## What's next (all incremental — the load-bearing architecture is done)
+## What's next
 
-**The authoritative sprint plan lives in [`ROADMAP.md`](ROADMAP.md#2-sprint-plan)** —
-it is the sprint-generation guide: a numbered sequence with outcomes, effort
-sizes, dependencies, per-item detail, and acceptance criteria. The short list
-below is the recommended near-term order; read the ROADMAP for the rest.
+**Landed in this consolidation (Sprints 1–6):**
+- Sprint 1 (context assembly + cap.http + LLM robustness) ✓
+- Sprint 2 (cap.time, cap.fs glob/search, cap.state enrich) ✓
+- Sprint 3 (fully async daemon) ✓
+- Sprint 5A (bwrap OS sandbox) ✓
+- Sprint 5B (cap.skill lifecycle) ✓
+- Sprint 6A (Anthropic native provider) ✓
+- pan-gateway (new: axum HTTP server, OpenAI-compatible API) ✓
+- Observability (TracingSink, property tests) ✓
 
-**Sprint 1 (recommended first):**
-1. **Context assembly + conversation memory** (`ROADMAP §A, Sprint 1A`) — the
-   single biggest *functional* gap. The CLI passes `Context::default()` every
-   line; fix this first so the agent remembers the prior turn. Highest value,
-   moderate effort, no new external deps.
-2. **`cap.http`** (`ROADMAP §C1, Sprint 1B`) — governed web access. Makes the LLM
-   agent genuinely useful (it can look things up). Test against a localhost mock.
-3. **LLM robustness** (`ROADMAP §B2, Sprint 1C`) — retries/backoff on 429/5xx,
-   large-tool-output truncation. Cheap insurance that turns a demo into something
-   you'd leave running.
+**Remaining from the ROADMAP:**
 
-The remaining sprints (capability fill-in, daemon async + unification, skill
-sandbox + self-improvement, Anthropic provider + streaming, wasm + observability)
-are all in the ROADMAP with their own dependency chains and acceptance criteria.
+1. **Daemon LLM modernization** — the daemon's `llm.rs` uses a blocking client
+   on tokio threads. Replace with a non-blocking client or converge on `pan-llm`.
+2. **Sprint 4 — Daemon ComponentRegistry unification** — the daemon still
+   hand-wires `ResolveGovernor`; build from config through `ComponentRegistry`
+   like the rest of the workspace.
+3. **Sprint 6B — Streaming responses** — per-token SSE (requires a core-loop
+   callback extension). The gateway's SSE currently emits the full report.
+4. **Sprint 7 — Wasm plugins** (`plugind.rs` TODOs #62/#58): wasmtime
+   instantiation, health probes.
+5. **Deferred items** (`ROADMAP`): packaging/versioning, multi-agent orchestration,
+   voice channel, hardware safety veto.
 
 Before starting any of these, re-read the ADR and confirm the current `git log`
 matches this doc's Status (update the Status if it has moved).
