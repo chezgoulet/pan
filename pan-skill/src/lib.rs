@@ -28,6 +28,8 @@
 
 pub mod protocol;
 pub mod runner;
+pub mod sandbox;
 
 pub use protocol::FromSkill;
 pub use runner::{SkillError, SkillRunner, PAN_PY};
+pub use sandbox::{bwrap_available, sandbox_args};

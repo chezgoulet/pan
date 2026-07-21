@@ -42,7 +42,7 @@ use crate::schema::{Scope, Value};
 /// Every call is dispatched under the handle's bound scope; the holder cannot
 /// name a different origin or skip a pipeline stage.
 #[async_trait::async_trait]
-pub trait ScopedInvoker {
+pub trait ScopedInvoker: Send + Sync {
     /// Invoke a capability. Routes through the full pipeline under the bound
     /// scope; returns the executor's result, or a skill-facing [`InvokeError`]
     /// describing which stage refused.
@@ -132,9 +132,6 @@ impl<'a> PipelineInvoker<'a> {
 
     /// Mint a **sub-invoker** for a nested skill: the same pipeline, a different
     /// origin. This does not grant anything — it only stamps a new origin string.
-    /// What that origin may reach is entirely the governor's decision, so a skill
-    /// cannot escalate by minting a sub-invoker naming a more-privileged origin;
-    /// the governor's grant table, not the caller, decides.
     pub fn sub(&self, origin: impl Into<String>) -> PipelineInvoker<'a> {
         PipelineInvoker {
             pipeline: self.pipeline,

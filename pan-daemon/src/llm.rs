@@ -417,8 +417,9 @@ mod tests {
         let provider = LlmProvider {
             config: config(port),
         };
-        let decision =
-            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
+        let decision = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(
             decision.intents,
             vec![
@@ -438,8 +439,9 @@ mod tests {
         let provider = LlmProvider {
             config: config(port),
         };
-        let decision =
-            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
+        let decision = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(decision.outcome(), Some(Outcome::Abandoned));
         assert!(decision
             .intents
@@ -451,8 +453,9 @@ mod tests {
     fn unreachable_server_becomes_conclude_abandoned() {
         // Port 1 is virtually never listening on loopback.
         let provider = LlmProvider { config: config(1) };
-        let decision =
-            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
+        let decision = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(decision.outcome(), Some(Outcome::Abandoned));
     }
 
@@ -478,8 +481,9 @@ mod tests {
         let mut cfg = config(port);
         cfg.api = ApiKind::OllamaNative;
         let provider = LlmProvider { config: cfg };
-        let decision =
-            crate::block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
+        let decision = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.decide(&goal_utterance(), &Context::default(), &[]));
         assert_eq!(
             decision.intents[0],
             ActionIntent::Express {

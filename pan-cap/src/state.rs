@@ -77,6 +77,24 @@ impl CapabilityProvider for StateCaps {
                     "required": ["key"]
                 }),
             },
+            Capability {
+                id: "cap.state.list".into(),
+                summary: "list all stored keys".into(),
+                args_schema: serde_json::json!({ "type": "object" }),
+            },
+            Capability {
+                id: "cap.state.delete".into(),
+                summary: "delete a key from the store".into(),
+                args_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["key"]
+                }),
+            },
+            Capability {
+                id: "cap.state.namespaces".into(),
+                summary: "list unique name prefixes (the part before the first `.`)".into(),
+                args_schema: serde_json::json!({ "type": "object" }),
+            },
         ]
     }
 
@@ -111,6 +129,32 @@ impl CapabilityProvider for StateCaps {
                     .cloned()
                     .unwrap_or(Value::Null);
                 Ok(serde_json::json!({ "value": value }))
+            }
+            "cap.state.list" => {
+                let keys: Vec<String> = self.store.lock().unwrap().keys().cloned().collect();
+                Ok(serde_json::json!({ "keys": keys }))
+            }
+            "cap.state.delete" => {
+                let snapshot = {
+                    let mut store = self.store.lock().unwrap();
+                    store.remove(&key);
+                    self.path.as_ref().map(|_| store.clone())
+                };
+                if let Some(snapshot) = snapshot {
+                    self.persist(&snapshot)?;
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
+            "cap.state.namespaces" => {
+                let store = self.store.lock().unwrap();
+                let mut namespaces: Vec<String> = store
+                    .keys()
+                    .filter_map(|k| k.split('.').next())
+                    .map(|n| n.to_string())
+                    .collect();
+                namespaces.sort();
+                namespaces.dedup();
+                Ok(serde_json::json!({ "namespaces": namespaces }))
             }
             other => Err(ExecError(format!("cap.state has no `{other}`"))),
         }

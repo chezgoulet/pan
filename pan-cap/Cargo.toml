@@ -9,6 +9,7 @@ description = "Concrete capability components (cap.state, cap.fs) that plug into
 
 [dependencies]
 pan-core = { path = "../pan-core" }
+pan-skill = { path = "../pan-skill" }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 

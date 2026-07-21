@@ -16,6 +16,92 @@ use pan_core::pipeline::ExecError;
 use pan_core::schema::{Capability, Value};
 use pan_core::toolbox::CapabilityProvider;
 
+/// Walk a directory tree recursively, yielding all files.
+fn walk_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if root.is_dir() {
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            if let Ok(read) = std::fs::read_dir(&dir) {
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+    } else if root.is_file() {
+        files.push(root.to_path_buf());
+    }
+    Ok(files)
+}
+
+/// Simple glob matching: supports `*` (any chars except `/`) and `**` (any chars
+/// including `/`). `?` matches a single non-`/` character. The pattern is
+/// matched against the full path.
+fn glob_match(pattern: &str, path: &str) -> bool {
+    let pat_chars: Vec<char> = pattern.chars().collect();
+    let path_chars: Vec<char> = path.chars().collect();
+    glob_match_rec(&pat_chars, &path_chars, 0, 0)
+}
+
+fn glob_match_rec(pat: &[char], pth: &[char], pi: usize, si: usize) -> bool {
+    if pi == pat.len() {
+        return si == pth.len();
+    }
+    match pat[pi] {
+        '*' => {
+            // `**` matches everything including slashes
+            if pi + 1 < pat.len() && pat[pi + 1] == '*' {
+                // Skip `/` after `**` if present
+                let next_pi = if pi + 2 < pat.len() && pat[pi + 2] == '/' {
+                    pi + 3
+                } else {
+                    pi + 2
+                };
+                // `**` matches any remainder
+                for s in si..=pth.len() {
+                    if glob_match_rec(pat, pth, next_pi, s) {
+                        return true;
+                    }
+                }
+                false
+            } else {
+                // `*` matches any chars except `/`
+                for s in si..=pth.len() {
+                    if s < pth.len() && pth[s] == '/' {
+                        continue;
+                    }
+                    if glob_match_rec(pat, pth, pi + 1, s) {
+                        return true;
+                    }
+                    if s < pth.len() && pth[s] == '/' {
+                        break;
+                    }
+                }
+                false
+            }
+        }
+        '?' => {
+            if si < pth.len() && pth[si] != '/' {
+                glob_match_rec(pat, pth, pi + 1, si + 1)
+            } else {
+                false
+            }
+        }
+        c => {
+            if si < pth.len() && pth[si] == c {
+                glob_match_rec(pat, pth, pi + 1, si + 1)
+            } else {
+                false
+            }
+        }
+    }
+}
+
 /// Filesystem capabilities confined to `root`.
 pub struct FsCaps {
     root: PathBuf,
@@ -84,6 +170,22 @@ impl CapabilityProvider for FsCaps {
                 summary: "list a directory under the agent's root".into(),
                 args_schema: path_only,
             },
+            Capability {
+                id: "cap.fs.glob".into(),
+                summary: "find files matching a glob pattern under the agent's root".into(),
+                args_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["pattern"]
+                }),
+            },
+            Capability {
+                id: "cap.fs.search".into(),
+                summary: "search for text in files under the agent's root".into(),
+                args_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["query", "path"]
+                }),
+            },
         ]
     }
 
@@ -113,6 +215,66 @@ impl CapabilityProvider for FsCaps {
                 }
                 entries.sort();
                 Ok(serde_json::json!({ "entries": entries }))
+            }
+            "cap.fs.glob" => {
+                let pattern = Self::arg_str(args, "pattern")?;
+                let jailed = self.jail(pattern)?;
+                let pattern_str = jailed.to_string_lossy().into_owned();
+                let mut matches = Vec::new();
+                // Walk the root directory and match paths against the glob pattern.
+                if let Ok(walk) = walk_files(&self.root) {
+                    for entry in walk {
+                        let entry_str = entry.to_string_lossy().into_owned();
+                        if glob_match(&pattern_str, &entry_str) {
+                            if let Ok(rel) = entry.strip_prefix(&self.root) {
+                                matches.push(rel.to_string_lossy().into_owned());
+                            }
+                        }
+                    }
+                }
+                matches.sort();
+                Ok(serde_json::json!({ "matches": matches }))
+            }
+            "cap.fs.search" => {
+                let query = Self::arg_str(args, "query")?;
+                let search_path = self.jail(Self::arg_str(args, "path")?)?;
+                let mut results = Vec::new();
+                if search_path.is_dir() {
+                    if let Ok(walk) = walk_files(&search_path) {
+                        for entry in walk {
+                            if entry.is_file() {
+                                if let Ok(content) = std::fs::read_to_string(&entry) {
+                                    for (i, line) in content.lines().enumerate() {
+                                        if line.contains(query) {
+                                            if let Ok(rel) = entry.strip_prefix(&self.root) {
+                                                results.push(serde_json::json!({
+                                                    "file": rel.to_string_lossy(),
+                                                    "line": i + 1,
+                                                    "text": line,
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if search_path.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&search_path) {
+                        for (i, line) in content.lines().enumerate() {
+                            if line.contains(query) {
+                                if let Ok(rel) = search_path.strip_prefix(&self.root) {
+                                    results.push(serde_json::json!({
+                                        "file": rel.to_string_lossy(),
+                                        "line": i + 1,
+                                        "text": line,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(serde_json::json!({ "matches": results }))
             }
             other => Err(ExecError(format!("cap.fs has no `{other}`"))),
         }

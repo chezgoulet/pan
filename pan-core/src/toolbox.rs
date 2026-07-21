@@ -18,35 +18,31 @@
 
 use std::collections::HashMap;
 
+use crate::invoker::ScopedInvoker;
 use crate::pipeline::{ExecError, Executor};
 use crate::registry::{CapabilityRegistry, ConflictError};
 use crate::schema::{Capability, Value};
 
-/// A component that provides one or more capabilities: it declares them (id +
-/// schema, so `resolve`/`validate` work) and executes them. The unit the plan
-/// calls a tool / `cap.*` component.
+/// A component that provides one or more capabilities.
 #[async_trait::async_trait]
 pub trait CapabilityProvider: Send + Sync {
-    /// A stable component id, for diagnostics — e.g. `"cap.fs"`.
     fn id(&self) -> &str;
-
-    /// The capabilities this component provides (id + args schema). Registered
-    /// into the pipeline's [`CapabilityRegistry`] by the [`Toolbox`].
     fn capabilities(&self) -> Vec<Capability>;
-
-    /// Execute one of this component's capabilities. `capability` is guaranteed
-    /// to be one this component declared — the toolbox routes strictly by
-    /// ownership, so a component never sees a capability it did not provide.
     async fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError>;
+
+    /// Execute with a [`ScopedInvoker`]. Default delegates to execute.
+    /// Capabilities like `cap.skill.run` override this.
+    async fn execute_with_invoker(
+        &self,
+        capability: &str,
+        args: &Value,
+        _invoker: &dyn ScopedInvoker,
+    ) -> Result<Value, ExecError> {
+        self.execute(capability, args).await
+    }
 }
 
-/// In-process capability dispatch — the plan's `exec.local`.
-///
-/// Holds a set of [`CapabilityProvider`]s, builds the merged
-/// [`CapabilityRegistry`] the pipeline resolves against, and implements
-/// [`Executor`] by routing each capability to the component that owns it. Two
-/// components claiming the same capability id is a **conflict error, never
-/// last-wins** — the same discipline the registry enforces.
+/// In-process capability dispatch.
 #[derive(Default)]
 pub struct Toolbox {
     providers: Vec<Box<dyn CapabilityProvider>>,
@@ -58,12 +54,8 @@ impl Toolbox {
         Self::default()
     }
 
-    /// Add a capability component. Errors (adding nothing) if any capability it
-    /// provides collides with one already present.
     pub fn add(&mut self, provider: Box<dyn CapabilityProvider>) -> Result<(), ConflictError> {
         let caps = provider.capabilities();
-        // Validate the whole component against the current set BEFORE mutating,
-        // so a rejected add leaves the toolbox untouched.
         for cap in &caps {
             if self.owner.contains_key(&cap.id) {
                 return Err(ConflictError { id: cap.id.clone() });
@@ -77,15 +69,11 @@ impl Toolbox {
         Ok(())
     }
 
-    /// Chainable [`add`](Self::add), for building a toolbox inline.
     pub fn with(mut self, provider: Box<dyn CapabilityProvider>) -> Result<Self, ConflictError> {
         self.add(provider)?;
         Ok(self)
     }
 
-    /// Build the [`CapabilityRegistry`] of everything this toolbox provides — the
-    /// menu `resolve` reads and the provider is offered. Uniqueness was enforced
-    /// at [`add`](Self::add) time, so registration here cannot conflict.
     pub fn registry(&self) -> CapabilityRegistry {
         let mut reg = CapabilityRegistry::new();
         for provider in &self.providers {
@@ -96,7 +84,6 @@ impl Toolbox {
         reg
     }
 
-    /// The capability ids this toolbox can run.
     pub fn capability_ids(&self) -> impl Iterator<Item = &str> {
         self.owner.keys().map(String::as_str)
     }
@@ -111,9 +98,24 @@ impl Executor for Toolbox {
     async fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError> {
         match self.owner.get(capability) {
             Some(&idx) => self.providers[idx].execute(capability, args).await,
-            // The pipeline's `resolve` stage should have caught this first; if a
-            // caller reaches execute with an unowned id, fail loudly rather than
-            // silently.
+            None => Err(ExecError(format!(
+                "no capability component provides `{capability}`"
+            ))),
+        }
+    }
+
+    async fn execute_with_invoker(
+        &self,
+        capability: &str,
+        args: &Value,
+        invoker: &dyn ScopedInvoker,
+    ) -> Result<Value, ExecError> {
+        match self.owner.get(capability) {
+            Some(&idx) => {
+                self.providers[idx]
+                    .execute_with_invoker(capability, args, invoker)
+                    .await
+            }
             None => Err(ExecError(format!(
                 "no capability component provides `{capability}`"
             ))),

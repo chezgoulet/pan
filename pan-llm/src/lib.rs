@@ -22,9 +22,11 @@
 //! base = "http://127.0.0.1:11434/v1"
 //! ```
 
+pub mod anthropic;
 pub mod http;
 pub mod openai;
 
+pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
 
 use pan_core::components::{ComponentConfig, ComponentError, ComponentRegistry};
@@ -34,9 +36,11 @@ const DEFAULT_MAX_TOKENS: u32 = 512;
 const DEFAULT_TEMPERATURE: f64 = 0.7;
 
 /// Register the LLM provider components this crate offers. A stock binary calls
-/// this on top of its base registry so `provider.llm` is selectable from config.
+/// this on top of its base registry so `provider.llm` and `provider.anthropic`
+/// are selectable from config.
 pub fn register_llm_providers(registry: &mut ComponentRegistry) -> Result<(), ComponentError> {
-    registry.register_provider("provider.llm", build_openai)
+    registry.register_provider("provider.llm", build_openai)?;
+    registry.register_provider("provider.anthropic", build_anthropic)
 }
 
 /// Build a [`OpenAiProvider`] from `[persona]` settings, falling back to the
@@ -81,6 +85,7 @@ fn build_openai(cfg: &ComponentConfig) -> Result<Box<dyn Provider>, ComponentErr
         .get("temperature")
         .and_then(|v| v.as_f64())
         .unwrap_or(DEFAULT_TEMPERATURE);
+    let token_budget = cfg.settings.get("token_budget").and_then(|v| v.as_u64());
 
     Ok(Box::new(OpenAiProvider {
         base,
@@ -89,6 +94,61 @@ fn build_openai(cfg: &ComponentConfig) -> Result<Box<dyn Provider>, ComponentErr
         instruction,
         max_tokens,
         temperature,
+        token_budget,
+        tokens_used: std::sync::atomic::AtomicU64::new(0),
+    }))
+}
+
+/// Build an [`AnthropicProvider`] from `[persona]` settings, with env fallback
+/// (`PAN_ANTHROPIC_API_KEY`, `PAN_LLM_BASE`, `PAN_LLM_MODEL`).
+fn build_anthropic(cfg: &ComponentConfig) -> Result<Box<dyn Provider>, ComponentError> {
+    let setting_str = |key: &str| cfg.settings.get(key).and_then(|v| v.as_str());
+
+    let base = setting_str("base")
+        .map(str::to_string)
+        .or_else(|| std::env::var("PAN_LLM_BASE").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ComponentError::Construction {
+            id: cfg.id.clone(),
+            reason: "provider.anthropic requires a `base` URL (or PAN_LLM_BASE)".into(),
+        })?;
+
+    let model = setting_str("model")
+        .map(str::to_string)
+        .or_else(|| std::env::var("PAN_LLM_MODEL").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ComponentError::Construction {
+            id: cfg.id.clone(),
+            reason: "provider.anthropic requires a `model` (or PAN_LLM_MODEL)".into(),
+        })?;
+
+    let api_key = setting_str("api_key")
+        .map(str::to_string)
+        .or_else(|| std::env::var("PAN_ANTHROPIC_API_KEY").ok())
+        .or_else(|| std::env::var("PAN_LLM_API_KEY").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ComponentError::Construction {
+            id: cfg.id.clone(),
+            reason: "provider.anthropic requires an `api_key` (or PAN_ANTHROPIC_API_KEY / PAN_LLM_API_KEY)".into(),
+        })?;
+
+    let instruction = setting_str("instruction").unwrap_or("").to_string();
+    let max_tokens = cfg
+        .settings
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(1024);
+    let token_budget = cfg.settings.get("token_budget").and_then(|v| v.as_u64());
+
+    Ok(Box::new(AnthropicProvider {
+        base,
+        model,
+        api_key,
+        instruction,
+        max_tokens,
+        token_budget,
+        tokens_used: std::sync::atomic::AtomicU64::new(0),
     }))
 }
 

@@ -25,6 +25,7 @@
 //! matter of *who* sets the abandon flag, not new machinery.
 
 use crate::events::{EventKind, EventStream};
+use crate::invoker::PipelineInvoker;
 use crate::pipeline::{Pipeline, PipelineError};
 use crate::schema::{ActionIntent, Context, Decision, Fragment, Goal, Outcome, Provider, Scope};
 
@@ -260,7 +261,12 @@ impl<'a> Loop<'a> {
                         correlation: correlation.clone(),
                         scope: self.scope.clone(),
                     };
-                    match self.pipeline.dispatch(req).await {
+                    // Construct a PipelineInvoker so that capabilities like
+                    // cap.skill.run can invoke other capabilities under the
+                    // same governance scope.
+                    let inv = PipelineInvoker::new(self.pipeline, self.scope.clone());
+                    let result = self.pipeline.dispatch_with_invoker(req, &inv).await;
+                    match result {
                         Ok(eff) => {
                             report.effected.push(eff.capability.clone());
                             tool_results.push(tool_result_fragment(

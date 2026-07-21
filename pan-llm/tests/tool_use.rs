@@ -140,6 +140,8 @@ async fn the_model_calls_a_tool_sees_the_result_and_answers() {
         instruction: "You are a calculator.".into(),
         max_tokens: 64,
         temperature: 0.0,
+        token_budget: None,
+        tokens_used: std::sync::atomic::AtomicU64::new(0),
     };
 
     let lp = Loop {

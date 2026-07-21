@@ -155,30 +155,25 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
 ## What's next (all incremental — the load-bearing architecture is done)
 
-**For the full breadth-and-depth map, see [`ROADMAP.md`](ROADMAP.md)** — every
-remaining area (context/memory, LLM polish, capabilities, skills sandbox +
-self-improvement, daemon async, channels/voice, wasm plugins, observability)
-with entry points, approach, testing, and risks. The short list below is the
-recommended near-term order.
+**The authoritative sprint plan lives in [`ROADMAP.md`](ROADMAP.md#2-sprint-plan)** —
+it is the sprint-generation guide: a numbered sequence with outcomes, effort
+sizes, dependencies, per-item detail, and acceptance criteria. The short list
+below is the recommended near-term order; read the ROADMAP for the rest.
 
-Recommended order; each sits cleanly on what's built:
+**Sprint 1 (recommended first):**
+1. **Context assembly + conversation memory** (`ROADMAP §A, Sprint 1A`) — the
+   single biggest *functional* gap. The CLI passes `Context::default()` every
+   line; fix this first so the agent remembers the prior turn. Highest value,
+   moderate effort, no new external deps.
+2. **`cap.http`** (`ROADMAP §C1, Sprint 1B`) — governed web access. Makes the LLM
+   agent genuinely useful (it can look things up). Test against a localhost mock.
+3. **LLM robustness** (`ROADMAP §B2, Sprint 1C`) — retries/backoff on 429/5xx,
+   large-tool-output truncation. Cheap insurance that turns a demo into something
+   you'd leave running.
 
-1. **`provider.llm` is done and cloud-connected** — full tool-use mapping on the
-   ReAct loop, over plain HTTP (local) *and* rustls TLS (cloud BYOK: OpenAI,
-   OpenRouter, Groq, Together, an Anthropic-compatible endpoint). To verify live:
-   set `PAN_LLM_BASE`/`PAN_LLM_MODEL`/`PAN_LLM_API_KEY` and run
-   `cargo test -p pan-llm --test live_cloud -- --nocapture`. Remaining *optional*
-   polish: an **Anthropic-native** dialect (`/v1/messages`, `x-api-key` +
-   `anthropic-version`, its own tool-use shape) as a sibling provider in the same
-   crate — only needed for Anthropic features the OpenAI-compat endpoint doesn't
-   expose. Otherwise, move to the items below.
-2. **`cap.http`** — GET/POST, governed. Test against a localhost mock (see the
-   daemon's llm test for the pattern), not the real network.
-3. **OS-level skill sandbox** — wire `SkillRunner::with_program` to `bwrap`/`nsjail`
-   so a skill's *ambient* syscalls are denied, not just its unsanctioned Pan calls.
-4. **Fully-async daemon** — drop the `block_on` bridge (tokio server/session,
-   non-blocking LLM client).
-5. **`skill.*` lifecycle capabilities** + the **self-improvement loop** (Phase 7).
+The remaining sprints (capability fill-in, daemon async + unification, skill
+sandbox + self-improvement, Anthropic provider + streaming, wasm + observability)
+are all in the ROADMAP with their own dependency chains and acceptance criteria.
 
 Before starting any of these, re-read the ADR and confirm the current `git log`
 matches this doc's Status (update the Status if it has moved).

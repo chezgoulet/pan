@@ -35,14 +35,13 @@
 
 use std::collections::HashMap;
 
-use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline, PipelineError};
+use pan_core::pipeline::PipelineError;
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::registry::CapabilityRegistry;
 use pan_core::schema::{
     self as v, ActionIntent, Capability, Context, Decision, Goal, Provider, Scope,
 };
 
-use crate::governor::ResolveGovernor;
 use crate::wire::{
     AckBody, Body, DecisionBody, Envelope, ErrorBody, HelloBody, InstantiateSoulBody, MessageType,
     MindKind, PerceiveBody, RegisterCapabilitiesBody, WelcomeBody, PROTOCOL_VERSION,
@@ -176,7 +175,7 @@ pub enum SessionError {
 /// with the surviving intents — which, on the happy path, are the same
 /// intents the provider emitted) or the FIRST failure (Failed, carrying the
 /// wire error code + a human message).
-enum DispatchOutcome {
+pub enum DispatchOutcome {
     Ok {
         intents: Vec<ActionIntent>,
     },
@@ -240,6 +239,7 @@ pub struct PerceiveJob {
     pub context: Context,
     pub provider: Box<dyn Provider>,
     pub caps: Vec<Capability>,
+    pub registry: CapabilityRegistry,
 }
 
 impl Session {
@@ -429,16 +429,21 @@ impl Session {
     }
 
     /// Synchronous perceive path — used by `handle` (and the unit tests).
-    /// The connection driver uses [`begin_perceive`]/[`finish_perceive`]
+    /// The connection driver uses [`begin_perceive`]/[`dispatch_decision_async`]
     /// directly so the mind call runs off the read loop; this method is the
-    /// same two halves glued together inline.
+    /// same halves glued together inline, using a temporary tokio runtime
+    /// for the async bits.
     fn on_perceive(&mut self, re: u64, body: Body) -> Result<Vec<Envelope>, SessionError> {
         match self.begin_perceive(re, body) {
             Err(replies) => Ok(replies),
             Ok(job) => {
-                let decision =
-                    crate::block_on(job.provider.decide(&job.goal, &job.context, &job.caps));
-                Ok(self.finish_perceive(&job, decision))
+                let rt =
+                    tokio::runtime::Runtime::new().expect("create tokio runtime for sync perceive");
+                let decision = rt.block_on(job.provider.decide(&job.goal, &job.context, &job.caps));
+                let scope = Scope::new(format!("soul.{}", job.soul_id));
+                let outcome =
+                    rt.block_on(dispatch_decision_async(&decision, &job.registry, &scope));
+                Ok(self.finish_perceive_with_outcome(&job, &outcome))
             }
         }
     }
@@ -488,6 +493,7 @@ impl Session {
             context,
             provider,
             caps,
+            registry: self.registry.clone(),
         })
     }
 
@@ -495,9 +501,12 @@ impl Session {
     /// BOUNDARY. If a newer revision of the same goal arrived while the
     /// mind was thinking, the work is discarded here (`error: superseded`)
     /// — the player walked away mid-sentence and nobody wants the orphaned
-    /// line. Otherwise every Invoke runs the dispatch pipeline and the
-    /// decision (or the first pipeline failure) becomes the reply.
-    pub fn finish_perceive(&mut self, job: &PerceiveJob, decision: Decision) -> Vec<Envelope> {
+    /// line. Takes a pre-computed [`DispatchOutcome`] from the async dispatch.
+    pub fn finish_perceive_with_outcome(
+        &mut self,
+        job: &PerceiveJob,
+        outcome: &DispatchOutcome,
+    ) -> Vec<Envelope> {
         let latest = self.latest_revision.get(&job.goal.id).copied().unwrap_or(0);
         if job.goal.revision < latest {
             return vec![self.out(
@@ -511,116 +520,97 @@ impl Session {
                 }),
             )];
         }
+        self.format_perceive_outcome(job, outcome)
+    }
 
-        // Enact: run every Invoke through the dispatch pipeline.
-        //
-        // On the `govern` slot: the wire-level `unknown_capability` check is
-        // already enforced at the pipeline's `resolve` stage (it returns
-        // `PipelineError::Unresolved`). We catch that below and surface the
-        // wire-level error code. The `ResolveGovernor` is a separate, explicit
-        // governor slot that a future wave can swap for a real `gov.policy`
-        // without changing the wire contract.
-        let mut stream = pan_core::events::EventStream::spawn(pan_core::events::DiscardSink);
-        let pipeline = Pipeline {
-            registry: &self.registry,
-            governor: &AllowAll,
-            executor: &EchoExecutor,
-            events: &stream,
-        };
-        let _g = ResolveGovernor {
-            registry: &self.registry,
-        };
-        let _ = _g;
-        // The soul on whose behalf we are enacting is the invocation's origin:
-        // the `govern` stage sees `soul.<id>` and can apply per-soul policy.
-        let scope = Scope::new(format!("soul.{}", job.soul_id));
-        let outcome = crate::block_on(self.dispatch_decision(&decision, &pipeline, &scope));
-        // Shut the stream down so the consumer thread exits; events were
-        // discarded by the sink.
-        stream.shutdown();
-
+    /// Format the wire response from a dispatch outcome, skipping the
+    /// supersession check (which is done by the caller).
+    fn format_perceive_outcome(
+        &mut self,
+        job: &PerceiveJob,
+        outcome: &DispatchOutcome,
+    ) -> Vec<Envelope> {
         match outcome {
             DispatchOutcome::Ok { intents } => {
-                // The wire's `decision` response carries the *original* goal
-                // id and revision so the host can correlate.
                 let body = DecisionBody {
                     soul_id: job.soul_id.clone(),
                     goal_id: job.goal.id.clone(),
                     goal_revision: job.goal.revision,
-                    decision: Decision { intents },
+                    decision: Decision {
+                        intents: intents.clone(),
+                    },
                 };
                 vec![self.out(Some(job.re), Body::Decision(body))]
             }
             DispatchOutcome::Failed { code, message } => {
-                // The wire's `error` reply (per the Soul Protocol): the
-                // daemon's validate stage replies with `error code:
-                // unknown_capability` etc. on a failed Invoke. The host
-                // correlates by `re`.
-                vec![self.out(Some(job.re), Body::Error(ErrorBody { code, message }))]
+                vec![self.out(
+                    Some(job.re),
+                    Body::Error(ErrorBody {
+                        code: *code,
+                        message: message.clone(),
+                    }),
+                )]
             }
         }
     }
+}
 
-    /// Walk every intent in the decision. Invokes go through the dispatch
-    /// pipeline. ANY failure short-circuits the response: the wire reply is
-    /// an `error` message (not a `decision`) carrying the matching code from
-    /// the Soul Protocol's closed set:
-    ///
-    /// - `PipelineError::Unresolved`  ->  `error code: "unknown_capability"`
-    /// - `PipelineError::Invalid`     ->  `error code: "invalid_args"`
-    /// - `PipelineError::Rejected`    ->  `error code: "provider_failure"`
-    /// - `PipelineError::Execution`   ->  `error code: "provider_failure"`
-    ///
-    /// If every Invoke succeeds, we return the provider's intents unchanged
-    /// (Express and Conclude are not world-effects and pass through). If the
-    /// provider's decision had no Conclude, we append `Continue` so the
-    /// host's loop reads a well-formed outcome.
-    async fn dispatch_decision(
-        &self,
-        decision: &Decision,
-        pipeline: &Pipeline<'_>,
-        scope: &Scope,
-    ) -> DispatchOutcome {
-        let mut out = Vec::new();
-        for intent in &decision.intents {
-            match intent {
-                ActionIntent::Invoke {
-                    capability,
-                    args,
-                    correlation,
-                } => {
-                    let req = pan_core::pipeline::EffectRequest {
-                        capability: capability.clone(),
-                        args: args.clone(),
-                        correlation: correlation.clone(),
-                        scope: scope.clone(),
+/// Free async function: dispatch all intents in a decision through the
+/// pipeline under the given scope. This runs outside the session lock.
+pub async fn dispatch_decision_async(
+    decision: &Decision,
+    registry: &pan_core::registry::CapabilityRegistry,
+    scope: &Scope,
+) -> DispatchOutcome {
+    use pan_core::events::{DiscardSink, EventStream};
+    use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline};
+
+    let mut stream = EventStream::spawn(DiscardSink);
+    let pipeline = Pipeline {
+        registry,
+        governor: &AllowAll,
+        executor: &EchoExecutor,
+        events: &stream,
+    };
+    let mut out = Vec::new();
+    for intent in &decision.intents {
+        match intent {
+            ActionIntent::Invoke {
+                capability,
+                args,
+                correlation,
+            } => {
+                let req = pan_core::pipeline::EffectRequest {
+                    capability: capability.clone(),
+                    args: args.clone(),
+                    correlation: correlation.clone(),
+                    scope: scope.clone(),
+                };
+                if let Err(e) = pipeline.dispatch(req).await {
+                    stream.shutdown();
+                    return DispatchOutcome::Failed {
+                        code: pipeline_err_to_wire(&e),
+                        message: pipeline_err_message(&e),
                     };
-                    if let Err(e) = pipeline.dispatch(req).await {
-                        return DispatchOutcome::Failed {
-                            code: pipeline_err_to_wire(&e),
-                            message: pipeline_err_message(&e),
-                        };
-                    }
-                    out.push(intent.clone());
                 }
-                // Express / Conclude are not world-effects; pass through.
-                _ => out.push(intent.clone()),
+                out.push(intent.clone());
             }
+            _ => out.push(intent.clone()),
         }
-        // If the original decision had no Conclude, append a Continue so the
-        // wire's decision body is well-formed (the host's loop reads
-        // `decision.outcome()`).
-        if !out
-            .iter()
-            .any(|i| matches!(i, ActionIntent::Conclude { .. }))
-        {
-            out.push(ActionIntent::Conclude {
-                outcome: v::Outcome::Continue,
-            });
-        }
-        DispatchOutcome::Ok { intents: out }
     }
+    stream.shutdown();
+    if !out
+        .iter()
+        .any(|i| matches!(i, ActionIntent::Conclude { .. }))
+    {
+        out.push(ActionIntent::Conclude {
+            outcome: pan_core::schema::Outcome::Continue,
+        });
+    }
+    DispatchOutcome::Ok { intents: out }
+}
 
+impl Session {
     fn on_shutdown(&mut self, re: u64, _body: Body) -> Result<Vec<Envelope>, SessionError> {
         // The protocol says: `shutdown` causes connection close. We send
         // `ack` first so the host sees a clean end; the driver then closes.
@@ -1002,15 +992,20 @@ mod async_perceive_tests {
     /// The enact boundary discards in-flight work superseded by a newer
     /// revision: begin rev 1, begin rev 2, THEN finish rev 1 → the rev-1
     /// job answers `error: superseded`; rev 2 completes as a decision.
-    #[test]
-    fn stale_revision_is_discarded_at_the_enact_boundary() {
+    #[tokio::test]
+    async fn stale_revision_is_discarded_at_the_enact_boundary() {
         let mut s = ready_session();
         let job1 = s.begin_perceive(10, perceive_body("conv", 1)).unwrap();
         let job2 = s.begin_perceive(11, perceive_body("conv", 2)).unwrap();
 
         // job1 finishes AFTER rev 2 was perceived — the player walked away.
-        let d1 = crate::block_on(job1.provider.decide(&job1.goal, &job1.context, &job1.caps));
-        let outs = s.finish_perceive(&job1, d1);
+        let d1 = job1
+            .provider
+            .decide(&job1.goal, &job1.context, &job1.caps)
+            .await;
+        let scope1 = Scope::new("soul.test");
+        let outcome1 = dispatch_decision_async(&d1, &job1.registry, &scope1).await;
+        let outs = s.finish_perceive_with_outcome(&job1, &outcome1);
         assert_eq!(outs.len(), 1);
         match &outs[0].body {
             Body::Error(e) => {
@@ -1021,8 +1016,13 @@ mod async_perceive_tests {
         }
 
         // job2 is the live revision; it completes normally.
-        let d2 = crate::block_on(job2.provider.decide(&job2.goal, &job2.context, &job2.caps));
-        let outs = s.finish_perceive(&job2, d2);
+        let d2 = job2
+            .provider
+            .decide(&job2.goal, &job2.context, &job2.caps)
+            .await;
+        let scope2 = Scope::new("soul.test");
+        let outcome2 = dispatch_decision_async(&d2, &job2.registry, &scope2).await;
+        let outs = s.finish_perceive_with_outcome(&job2, &outcome2);
         match &outs[0].body {
             Body::Decision(d) => {
                 assert_eq!(d.goal_revision, 2);
@@ -1034,17 +1034,18 @@ mod async_perceive_tests {
 
     /// Same-revision re-delivery is NOT superseded (idempotent perceive);
     /// and an unrelated goal id is never affected by another goal's ledger.
-    #[test]
-    fn supersession_is_scoped_to_the_goal_id() {
+    #[tokio::test]
+    async fn supersession_is_scoped_to_the_goal_id() {
         let mut s = ready_session();
         let job_a = s.begin_perceive(20, perceive_body("goal_a", 5)).unwrap();
         let _job_b = s.begin_perceive(21, perceive_body("goal_b", 1)).unwrap();
-        let d = crate::block_on(
-            job_a
-                .provider
-                .decide(&job_a.goal, &job_a.context, &job_a.caps),
-        );
-        let outs = s.finish_perceive(&job_a, d);
+        let d = job_a
+            .provider
+            .decide(&job_a.goal, &job_a.context, &job_a.caps)
+            .await;
+        let scope = Scope::new("soul.test");
+        let outcome = dispatch_decision_async(&d, &job_a.registry, &scope).await;
+        let outs = s.finish_perceive_with_outcome(&job_a, &outcome);
         assert!(
             matches!(outs[0].body, Body::Decision(_)),
             "goal_a rev 5 must not be superseded by goal_b rev 1"

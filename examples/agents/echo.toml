@@ -1,0 +1,15 @@
+[meta]
+name = "echo"
+persona = "assistant"
+
+[persona]
+instruction = "You are an echo. Repeat what the user says, but keep it interesting."
+provider = "provider.echo"
+prefix = "🤖 Echo: "
+
+[caps.grant]
+shell = true
+state = true
+
+[caps.settings."cap.state"]
+path = "memory.json"

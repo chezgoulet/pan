@@ -16,10 +16,10 @@ use std::process::ExitCode;
 use pan_daemon::conformance::check_fixtures;
 use pan_daemon::server::serve_loopback;
 
-/// Canonical default port when neither `--port` nor `REACHLOCK_PAN_PORT` is set.
 const DEFAULT_PORT: u16 = 40707;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         print_usage();
@@ -34,7 +34,7 @@ fn main() -> ExitCode {
             println!("pan {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        "serve" => run_serve(&args[2..]),
+        "serve" => run_serve(&args[2..]).await,
         "check-conformance" => run_check_conformance(),
         other => {
             eprintln!("unknown subcommand: {other}");
@@ -55,7 +55,7 @@ fn print_usage() {
     eprintln!("    pan --help              Print this message.");
 }
 
-fn run_serve(args: &[String]) -> ExitCode {
+async fn run_serve(args: &[String]) -> ExitCode {
     let mut port: Option<u16> = None;
     let mut i = 0;
     while i < args.len() {
@@ -100,12 +100,10 @@ fn run_serve(args: &[String]) -> ExitCode {
         .unwrap_or(DEFAULT_PORT);
 
     eprintln!("pan serve: binding 127.0.0.1:{port}");
-    // Resolve (and pre-load) the llm mind before the first host connects, so
-    // the first generated line of dialogue doesn't pay the model-load cost.
-    if let Some(config) = pan_daemon::llm::resolve() {
-        pan_daemon::llm::warm_up(config);
-    }
-    if let Err(e) = serve_loopback(port) {
+    // The llm mind is lazily resolved by the session when it needs it.
+    // Pre-loading happens implicitly via the first perceive that targets
+    // an llm-minded soul.
+    if let Err(e) = serve_loopback(port).await {
         eprintln!("server error: {e}");
         return ExitCode::from(1);
     }

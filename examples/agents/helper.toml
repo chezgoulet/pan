@@ -1,0 +1,20 @@
+[meta]
+name = "helper"
+persona = "assistant"
+
+[persona]
+instruction = "You are a helpful AI assistant with access to tools. Use shell commands to answer questions, state to remember facts, and http to fetch web content."
+provider = "provider.llm"
+base = "http://127.0.0.1:11434/v1"
+model = "llama3.2"
+
+[caps]
+enable = ["cap.shell", "cap.state", "cap.http"]
+
+[caps.grant]
+shell = true
+state = true
+http = true
+
+[caps.settings."cap.state"]
+path = "memory.json"

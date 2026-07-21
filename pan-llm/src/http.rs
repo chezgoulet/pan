@@ -23,10 +23,19 @@ use pan_core::schema::Value;
 
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Maximum retries on retryable HTTP statuses (429, 5xx).
+const MAX_RETRIES: u32 = 3;
+
 /// POST `body` as JSON to `base` + `path` and parse the JSON response. `api_key`,
 /// if present, is sent as a bearer token. `http://` and `https://` bases are both
 /// supported. Any transport/status/parse failure is a human-readable `Err(String)`
 /// — the provider turns that into `Conclude(Abandoned)`.
+///
+/// Retries on 429 (rate limit) and 5xx (server error) with exponential backoff,
+/// respecting a `Retry-After` header when present. Other errors (4xx, transport)
+/// fail immediately.
+/// POST `body` as JSON to `base` + `path`, adding `api_key` as a Bearer
+/// Authorization header. Wraps [`post_json_ex`] with no extra headers.
 pub fn post_json(
     base: &str,
     path: &str,
@@ -34,50 +43,126 @@ pub fn post_json(
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let target = parse_base(base, path)?;
-    let request = build_request(&target.host, &target.full_path, api_key, body);
-    let raw = match target.scheme {
-        Scheme::Http => http_exchange(&target.host, target.port, timeout, request.as_bytes())?,
-        Scheme::Https => https_exchange(&target.host, target.port, timeout, request.as_bytes())?,
+    let headers: &[(&str, String)] = &match api_key {
+        Some(k) => vec![("Authorization", format!("Bearer {k}"))],
+        None => vec![],
     };
-    parse_response(&raw)
+    post_json_ex(base, path, body, headers, timeout)
+}
+
+/// POST `body` as JSON to `base` + `path` with arbitrary extra headers, then
+/// parse the JSON response. `http://` and `https://` bases are both supported.
+/// See [`post_json`] for retry/backoff semantics.
+pub fn post_json_ex(
+    base: &str,
+    path: &str,
+    body: &Value,
+    extra_headers: &[(&str, String)],
+    timeout: Duration,
+) -> Result<Value, String> {
+    let target = parse_base(base, path)?;
+    let mut last_err: Option<(u16, String)> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = 500 * 2u64.pow(attempt - 1);
+            std::thread::sleep(Duration::from_millis(delay_ms + rand_delay(delay_ms)));
+        }
+        let request = build_request_ex(&target.host, &target.full_path, body, extra_headers);
+        let raw = match target.scheme {
+            Scheme::Http => http_exchange(&target.host, target.port, timeout, request.as_bytes())?,
+            Scheme::Https => {
+                https_exchange(&target.host, target.port, timeout, request.as_bytes())?
+            }
+        };
+        match parse_response(&raw) {
+            Ok(val) => return Ok(val),
+            Err((status, msg)) if status >= 429 => {
+                let msg_clone = msg.clone();
+                last_err = Some((status, msg));
+                if let Some(ms) = parse_retry_after(&raw) {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+                if status == 429 || status >= 500 {
+                    continue;
+                }
+                return Err(format!("HTTP {status}: {msg_clone}"));
+            }
+            Err((_, msg)) => return Err(msg),
+        }
+    }
+    match last_err {
+        Some((status, msg)) => Err(format!("HTTP {status} after {MAX_RETRIES} retries: {msg}")),
+        None => Err("max retries exceeded".into()),
+    }
+}
+
+/// Parse the `Retry-After` header from an HTTP response. Returns milliseconds, or
+/// `None` if absent/unparseable. The RFC allows both seconds (int) and HTTP-date;
+/// we handle the common case (seconds as an integer).
+fn parse_retry_after(raw: &str) -> Option<u64> {
+    let head = raw.split_once("\r\n\r\n")?.0;
+    for line in head.lines() {
+        if line.to_ascii_lowercase().starts_with("retry-after:") {
+            let val = line.split(':').nth(1)?.trim();
+            // Try seconds as integer
+            if let Ok(secs) = val.parse::<u64>() {
+                return Some(secs.min(30).saturating_mul(1000));
+            }
+        }
+    }
+    None
+}
+
+/// A small jitter: up to half the base delay (in ms).
+fn rand_delay(base_ms: u64) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    (seed as u64) % (base_ms / 2 + 1)
 }
 
 // ---------------------------------------------------------------------------
 // Request / response (transport-independent)
 // ---------------------------------------------------------------------------
 
-fn build_request(host: &str, full_path: &str, api_key: Option<&str>, body: &Value) -> String {
+fn build_request_ex(
+    host: &str,
+    full_path: &str,
+    body: &Value,
+    extra_headers: &[(&str, String)],
+) -> String {
     let payload = body.to_string();
     let mut request = format!(
         "POST {full_path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
         payload.len()
     );
-    if let Some(key) = api_key {
-        request.push_str(&format!("Authorization: Bearer {key}\r\n"));
+    for (name, value) in extra_headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
     }
     request.push_str("\r\n");
     request.push_str(&payload);
     request
 }
 
-fn parse_response(raw: &str) -> Result<Value, String> {
+fn parse_response(raw: &str) -> Result<Value, (u16, String)> {
     let (head, response_body) = raw
         .split_once("\r\n\r\n")
-        .ok_or_else(|| "malformed HTTP response".to_string())?;
+        .ok_or_else(|| (0, "malformed HTTP response".to_string()))?;
     let status_line = head.lines().next().unwrap_or("");
     let status = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| format!("bad status line: {status_line:?}"))?;
+        .ok_or_else(|| (0, format!("bad status line: {status_line:?}")))?;
     if status != 200 {
-        return Err(format!(
-            "HTTP {status}: {}",
-            &response_body[..response_body.len().min(400)]
+        return Err((
+            status,
+            response_body[..response_body.len().min(400)].to_string(),
         ));
     }
-    serde_json::from_str(response_body).map_err(|e| format!("bad response JSON: {e}"))
+    serde_json::from_str(response_body).map_err(|e| (status, format!("bad response JSON: {e}")))
 }
 
 /// Read to EOF, tolerating a TLS peer that closes without a `close_notify`

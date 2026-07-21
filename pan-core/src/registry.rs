@@ -19,7 +19,7 @@ use crate::schema::Capability;
 use std::collections::BTreeMap;
 
 /// Registry of invocable capabilities, read by the pipeline's `resolve` stage.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CapabilityRegistry {
     by_id: BTreeMap<String, Capability>,
 }

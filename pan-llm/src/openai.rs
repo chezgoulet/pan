@@ -21,6 +21,7 @@
 //! cancelled (superseded) `decide` leaves nothing behind.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use pan_core::loop_engine::TOOL_RESULT_CHANNEL;
@@ -48,6 +49,13 @@ pub struct OpenAiProvider {
     pub instruction: String,
     pub max_tokens: u32,
     pub temperature: f64,
+    /// Optional token budget. When set, the provider tracks usage via
+    /// `usage.total_tokens` from the API and refuses new decisions once
+    /// cumulative tokens exceed the budget.
+    pub token_budget: Option<u64>,
+    /// Cumulative tokens used across all decides, updated from the API
+    /// response's `usage.total_tokens`. Read by the gateway's metrics.
+    pub tokens_used: AtomicU64,
 }
 
 #[async_trait::async_trait]
@@ -57,6 +65,13 @@ impl Provider for OpenAiProvider {
     }
 
     async fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
+        // Check token budget before making an API call.
+        if let Some(budget) = self.token_budget {
+            if self.tokens_used.load(Ordering::Relaxed) >= budget {
+                return abandoned("token budget exhausted");
+            }
+        }
+
         let (tools, name_to_id) = tool_schema(caps);
         let messages = self.build_messages(goal, ctx);
 
@@ -82,7 +97,15 @@ impl Provider for OpenAiProvider {
             &request,
             HTTP_TIMEOUT,
         ) {
-            Ok(response) => interpret(&response, &name_to_id),
+            Ok(response) => {
+                // Track token usage from the API response.
+                if let Some(usage) = response.get("usage") {
+                    if let Some(tokens) = usage.get("total_tokens").and_then(|t| t.as_u64()) {
+                        self.tokens_used.fetch_add(tokens, Ordering::Relaxed);
+                    }
+                }
+                interpret(&response, &name_to_id)
+            }
             Err(e) => abandoned(&e),
         }
     }
@@ -90,13 +113,29 @@ impl Provider for OpenAiProvider {
 
 impl OpenAiProvider {
     /// Rebuild the full chat transcript for this step from the goal and context.
-    /// Non-tool fragments (persona, memory, …) shape the system prompt; the
-    /// trigger is the user turn; each `tool_result` fragment replays as an
-    /// `assistant(tool_call)` → `tool(result)` pair, in the order they occurred.
+    /// Non-tool, non-history fragments (persona, memory, …) shape the system
+    /// prompt; a `history` channel fragment (a JSON array of `{role, content}`
+    /// turns) is replayed as prior user/assistant messages between the system
+    /// prompt and the current user turn; each `tool_result` fragment replays as
+    /// an `assistant(tool_call)` → `tool(result)` pair.
     fn build_messages(&self, goal: &Goal, ctx: &Context) -> Vec<Value> {
         let mut system = self.instruction.trim().to_string();
+        let mut history_messages: Vec<Value> = Vec::new();
         for fragment in &ctx.fragments {
             if fragment.channel == TOOL_RESULT_CHANNEL {
+                continue;
+            }
+            if fragment.channel == "history" {
+                if let Ok(turns) = serde_json::from_str::<Vec<Value>>(&fragment.body) {
+                    for turn in turns {
+                        if matches!(
+                            turn.get("role").and_then(|r| r.as_str()),
+                            Some("user" | "assistant")
+                        ) {
+                            history_messages.push(turn);
+                        }
+                    }
+                }
                 continue;
             }
             if !system.is_empty() {
@@ -111,10 +150,9 @@ impl OpenAiProvider {
             system.push_str(&format!("[objective]\n{}", goal.objective.trim()));
         }
 
-        let mut messages = vec![
-            serde_json::json!({ "role": "system", "content": system }),
-            serde_json::json!({ "role": "user", "content": user_turn(&goal.trigger) }),
-        ];
+        let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
+        messages.extend(history_messages);
+        messages.push(serde_json::json!({ "role": "user", "content": user_turn(&goal.trigger) }));
 
         for fragment in &ctx.fragments {
             if fragment.channel != TOOL_RESULT_CHANNEL {
@@ -128,6 +166,11 @@ impl OpenAiProvider {
         messages
     }
 }
+
+/// Maximum characters for a single tool-output body replayed into the LLM
+/// prompt. Outputs larger than this are truncated with a marker so the model
+/// knows data was clipped rather than silently lost.
+const MAX_TOOL_OUTPUT_CHARS: usize = 32_768;
 
 /// Turn a `tool_result` fragment body into the `(assistant tool_call, tool
 /// result)` message pair that must precede the model's next turn. Returns `None`
@@ -147,7 +190,18 @@ fn replay_exchange(body: &str) -> Option<(Value, Value)> {
         .map(|a| a.to_string())
         .unwrap_or_else(|| "{}".to_string());
     let content = match (parsed.get("result"), parsed.get("error")) {
-        (Some(result), _) => result.to_string(),
+        (Some(result), _) => {
+            let s = result.to_string();
+            if s.len() > MAX_TOOL_OUTPUT_CHARS {
+                format!(
+                    "{}...[truncated: {} total chars]",
+                    &s[..MAX_TOOL_OUTPUT_CHARS],
+                    s.len()
+                )
+            } else {
+                s
+            }
+        }
         (None, Some(error)) => format!("error: {error}"),
         (None, None) => "null".to_string(),
     };
@@ -306,6 +360,8 @@ mod tests {
             instruction: "You are a calculator.".into(),
             max_tokens: 64,
             temperature: 0.0,
+            token_budget: None,
+            tokens_used: AtomicU64::new(0),
         }
     }
 

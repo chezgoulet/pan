@@ -25,6 +25,10 @@ async fn main() -> ExitCode {
             print_usage();
             ExitCode::SUCCESS
         }
+        Some("--version") | Some("-V") => {
+            println!("pan-agent {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         Some(other) => {
             eprintln!("pan-agent: unknown command `{other}`");
             print_usage();

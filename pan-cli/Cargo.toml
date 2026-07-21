@@ -10,6 +10,7 @@ description = "The pan-agent CLI: run an Agent.toml as an interactive agent over
 [dependencies]
 pan-core = { path = "../pan-core" }
 pan-agent = { path = "../pan-agent" }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [[bin]]

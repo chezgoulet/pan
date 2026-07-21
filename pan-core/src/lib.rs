@@ -27,11 +27,13 @@
 //! [`tests::wave0_exit_test`] below.
 
 pub mod components;
+pub mod config;
 pub mod events;
 pub mod handles;
 pub mod invoker;
 pub mod loop_engine;
 pub mod pipeline;
+pub mod plugind;
 pub mod providers;
 pub mod registry;
 pub mod schema;

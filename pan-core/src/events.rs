@@ -95,6 +95,31 @@ impl EventSink for DiscardSink {
     fn consume(&mut self, _event: Event) {}
 }
 
+/// Logs every event to `tracing` as a structured record. Each event variant
+/// becomes a `tracing::info!` with its fields as JSON on the `event.kind`
+/// field, plus the event's sequence number.
+pub struct TracingSink;
+impl EventSink for TracingSink {
+    fn consume(&mut self, event: Event) {
+        let kind_json = serde_json::to_string(&event.kind).unwrap_or_default();
+        tracing::info!(
+            target: "pan.event",
+            seq = event.seq,
+            kind = %kind_json,
+        );
+    }
+}
+
+/// A sink that feeds structured events to a closure — the generic hook for
+/// metrics aggregation, per-request logging, etc. The closure receives each
+/// event after it leaves the event stream's consumer thread.
+pub struct FnSink<F: FnMut(Event) + Send + 'static>(pub F);
+impl<F: FnMut(Event) + Send + 'static> EventSink for FnSink<F> {
+    fn consume(&mut self, event: Event) {
+        (self.0)(event);
+    }
+}
+
 /// Collects events in memory. Useful for tests and the ephemeral default; a
 /// real durable sink would write to disk/DB instead.
 #[derive(Default)]

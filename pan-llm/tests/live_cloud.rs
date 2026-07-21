@@ -35,6 +35,8 @@ async fn a_real_endpoint_answers_over_tls() {
         instruction: "You are a terse assistant. Answer in one short sentence.".into(),
         max_tokens: 64,
         temperature: 0.0,
+        token_budget: None,
+        tokens_used: std::sync::atomic::AtomicU64::new(0),
     };
 
     let goal = Goal {

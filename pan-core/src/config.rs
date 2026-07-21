@@ -110,11 +110,10 @@ impl Config {
 
     /// Load a single file (no import resolution for now — simple case).
     fn load_file(path: &std::path::Path) -> Result<Self, ConfigError> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::Io {
-                path: path.to_path_buf(),
-                detail: e.to_string(),
-            })?;
+        let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
+            path: path.to_path_buf(),
+            detail: e.to_string(),
+        })?;
         let expanded = expand_env_vars(&raw);
         toml::from_str(&expanded).map_err(|e| ConfigError::Parse {
             path: path.to_path_buf(),
@@ -175,7 +174,12 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConfigError::Io { path, detail } => {
-                write!(f, "I/O error reading config `{}`: {}", path.display(), detail)
+                write!(
+                    f,
+                    "I/O error reading config `{}`: {}",
+                    path.display(),
+                    detail
+                )
             }
             ConfigError::Parse { path, detail } => {
                 write!(f, "parse error in config `{}`: {}", path.display(), detail)
@@ -215,12 +219,16 @@ mod tests {
         let dir = std::env::temp_dir().join("pan_test_config");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("config.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [pan]
 plugin_dirs = ["/tmp/plugins"]
 admin_port = 8080
 log_level = "debug"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let cfg = Config::load(&path).unwrap();
         assert_eq!(cfg.pan.admin_port, 8080);

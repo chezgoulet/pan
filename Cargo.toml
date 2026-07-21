@@ -7,6 +7,7 @@ members = [
     "pan-cap",
     "pan-cli",
     "pan-llm",
+    "pan-gateway",
 ]
 resolver = "2"
 
@@ -16,6 +17,12 @@ edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 publish = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

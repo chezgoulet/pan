@@ -27,6 +27,7 @@
 //! the *correctness of a govern policy or an executor* is not.
 
 use crate::events::{EventKind, EventStream, StageStatus};
+use crate::invoker::ScopedInvoker;
 use crate::registry::CapabilityRegistry;
 use crate::schema::{Scope, Value};
 
@@ -153,13 +154,23 @@ impl Governor for ScopedGovernor {
     }
 }
 
-/// The `execute` stage plugin slot. Receives a [`Governed`] effect — which by
-/// construction has passed govern — and performs it, returning a result value.
-/// In-process vs RPC is the executor's concern; the loop never knows which.
+/// The `execute` stage plugin slot.
 #[async_trait::async_trait]
 pub trait Executor: Send + Sync {
     fn id(&self) -> &str;
     async fn execute(&self, capability: &str, args: &Value) -> Result<Value, ExecError>;
+
+    /// Execute with a [`ScopedInvoker`] so capabilities like `cap.skill.run`
+    /// can invoke other capabilities under governance. Default delegates to
+    /// [`execute`](Self::execute).
+    async fn execute_with_invoker(
+        &self,
+        capability: &str,
+        args: &Value,
+        _invoker: &dyn ScopedInvoker,
+    ) -> Result<Value, ExecError> {
+        self.execute(capability, args).await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +194,104 @@ impl Executor for EchoExecutor {
 // Type-state tokens. Each is opaque: private fields, no public constructor
 // except the stage that produces it. This is what makes the path non-bypassable.
 // ---------------------------------------------------------------------------
+
+/// A governor decorator that adds host-level allowlisting for `cap.http.*`
+/// capabilities. Wraps an inner [`Governor`] (typically [`ScopedGovernor`])
+/// and delegates capability-prefix checking to it. For `cap.http.*` invocations,
+/// it additionally checks that the `url` arg's host matches the origin's
+/// allowlist.
+///
+/// The allowlist maps `origin -> [allowed_host_patterns]`. A pattern may be an
+/// exact hostname ("api.example.com") or a glob-like prefix ("*.trusted.org").
+/// If no allowlist entry exists for the origin, all `cap.http.*` invocations
+/// are denied.
+pub struct HostAllowlistGovernor {
+    inner: Box<dyn Governor>,
+    /// Maps origin → list of allowed host patterns for cap.http.*
+    allow_hosts: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl HostAllowlistGovernor {
+    pub fn new(inner: Box<dyn Governor>) -> Self {
+        Self {
+            inner,
+            allow_hosts: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Grant `origin` access to `hosts` for cap.http.* invocations.
+    pub fn allow_hosts(
+        mut self,
+        origin: impl Into<String>,
+        hosts: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.allow_hosts
+            .insert(origin.into(), hosts.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// True if `host` matches a pattern. Patterns support:
+    /// - Exact match: "api.example.com"
+    /// - Wildcard prefix: "*.example.com" (matches subdomain + itself)
+    fn host_matches(pattern: &str, host: &str) -> bool {
+        if let Some(suffix) = pattern.strip_prefix("*.") {
+            host == suffix || host.ends_with(&format!(".{suffix}"))
+        } else {
+            host == pattern
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Governor for HostAllowlistGovernor {
+    fn id(&self) -> &str {
+        "gov.host-allowlist"
+    }
+
+    async fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict {
+        // First, delegate to the inner governor for capability-prefix checks.
+        let inner = self.inner.govern(scope, capability, args).await;
+        match inner {
+            Verdict::Allow => {
+                // Only apply host allowlist for cap.http.* capabilities.
+                if capability.starts_with("cap.http.") && !self.allow_hosts.is_empty() {
+                    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let host = extract_host(url);
+                    let allowed = self
+                        .allow_hosts
+                        .get(&scope.origin)
+                        .map(|patterns| patterns.iter().any(|p| Self::host_matches(p, &host)))
+                        .unwrap_or(false);
+                    if !allowed {
+                        return Verdict::Deny {
+                            reason: format!(
+                                "host `{host}` is not in the allowlist for origin `{}`",
+                                scope.origin
+                            ),
+                        };
+                    }
+                }
+                Verdict::Allow
+            }
+            other => other,
+        }
+    }
+}
+
+/// Extract the hostname from a URL string.
+fn extract_host(url: &str) -> String {
+    let rest = if let Some(r) = url.strip_prefix("https://") {
+        r
+    } else if let Some(r) = url.strip_prefix("http://") {
+        r
+    } else {
+        return url.to_string();
+    };
+    match rest.split_once('/') {
+        Some((host, _)) => host.to_string(),
+        None => rest.to_string(),
+    }
+}
 
 /// Output of `resolve`: the request's capability id was found in the registry.
 pub struct Resolved {
@@ -304,8 +413,7 @@ impl<'a> Pipeline<'a> {
     }
 
     /// Stages 4 & 5 — execute then record. Accepts only a [`Governed`] token, so
-    /// it is impossible to call without a passing govern decision. Records
-    /// `Effected` on success.
+    /// it is impossible to call without a passing govern decision.
     pub async fn execute(&self, governed: Governed) -> Result<Effected, PipelineError> {
         let cap = governed.request.capability;
         match self.executor.execute(&cap, &governed.request.args).await {
@@ -330,9 +438,41 @@ impl<'a> Pipeline<'a> {
         }
     }
 
-    /// The whole pipeline, run in order. This is the only path the loop uses;
-    /// the individual stage methods are public so they can be unit-tested and so
-    /// the *type-level* proof (execute needs Governed) is visible and exercised.
+    /// Execute with a [`ScopedInvoker`], for capabilities that need to invoke
+    /// other capabilities under governance (e.g. `cap.skill.run`).
+    pub async fn execute_with_invoker(
+        &self,
+        governed: Governed,
+        invoker: &dyn ScopedInvoker,
+    ) -> Result<Effected, PipelineError> {
+        let cap = governed.request.capability;
+        match self
+            .executor
+            .execute_with_invoker(&cap, &governed.request.args, invoker)
+            .await
+        {
+            Ok(result) => {
+                self.record("execute", &cap, StageStatus::Ok);
+                self.events.emit(EventKind::Effected {
+                    capability: cap.clone(),
+                    result: result.clone(),
+                });
+                Ok(Effected {
+                    capability: cap,
+                    result,
+                })
+            }
+            Err(ExecError(reason)) => {
+                self.record("execute", &cap, StageStatus::Error);
+                Err(PipelineError::Execution {
+                    capability: cap,
+                    reason,
+                })
+            }
+        }
+    }
+
+    /// The whole pipeline, run in order.
     pub async fn dispatch(&self, request: EffectRequest) -> Result<Effected, PipelineError> {
         self.events.emit(EventKind::DispatchStarted {
             capability: request.capability.clone(),
@@ -342,6 +482,24 @@ impl<'a> Pipeline<'a> {
         let validated = self.validate(resolved)?;
         let governed = self.govern(validated).await?;
         self.execute(governed).await
+    }
+
+    /// Dispatch with a [`ScopedInvoker`] for capabilities that need cross-cap
+    /// invocation (e.g. `cap.skill.run`). The invoker is passed to
+    /// [`Executor::execute_with_invoker`].
+    pub async fn dispatch_with_invoker(
+        &self,
+        request: EffectRequest,
+        invoker: &dyn ScopedInvoker,
+    ) -> Result<Effected, PipelineError> {
+        self.events.emit(EventKind::DispatchStarted {
+            capability: request.capability.clone(),
+            correlation: request.correlation.clone(),
+        });
+        let resolved = self.resolve(request)?;
+        let validated = self.validate(resolved)?;
+        let governed = self.govern(validated).await?;
+        self.execute_with_invoker(governed, invoker).await
     }
 
     fn record(&self, stage: &'static str, capability: &str, status: StageStatus) {
@@ -568,6 +726,74 @@ mod tests {
             .govern(&Scope::new("skill.rogue"), "cap.fs.read", &Value::Null)
             .await;
         assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn host_allowlist_allows_exact_match_and_denies_unlisted() {
+        let inner = ScopedGovernor::new().grant("persona.assistant", ["cap.http"]);
+        let g = HostAllowlistGovernor::new(Box::new(inner))
+            .allow_hosts("persona.assistant", ["api.example.com"]);
+        let s = Scope::new("persona.assistant");
+
+        // Exact host match → allow.
+        let v = g
+            .govern(
+                &s,
+                "cap.http.get",
+                &serde_json::json!({"url": "http://api.example.com/data"}),
+            )
+            .await;
+        assert!(matches!(v, Verdict::Allow));
+
+        // Unlisted host → deny.
+        let v = g
+            .govern(
+                &s,
+                "cap.http.get",
+                &serde_json::json!({"url": "http://evil.org/steal"}),
+            )
+            .await;
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn host_allowlist_wildcard_matches_subdomains() {
+        let inner = ScopedGovernor::new().grant("skill.x", ["cap.http"]);
+        let g =
+            HostAllowlistGovernor::new(Box::new(inner)).allow_hosts("skill.x", ["*.trusted.org"]);
+        let s = Scope::new("skill.x");
+
+        // Subdomain match.
+        let v = g
+            .govern(
+                &s,
+                "cap.http.get",
+                &serde_json::json!({"url": "http://sub.trusted.org/path"}),
+            )
+            .await;
+        assert!(matches!(v, Verdict::Allow));
+
+        // Non-matching.
+        let v = g
+            .govern(
+                &s,
+                "cap.http.get",
+                &serde_json::json!({"url": "http://untrusted.org/evil"}),
+            )
+            .await;
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn host_allowlist_does_not_block_non_http_capabilities() {
+        let inner = ScopedGovernor::new().grant("persona.x", ["cap.shell", "cap.http"]);
+        let g = HostAllowlistGovernor::new(Box::new(inner))
+            .allow_hosts("persona.x", ["api.example.com"]);
+        let s = Scope::new("persona.x");
+
+        // cap.shell is not cap.http, so host allowlist doesn't apply.
+        let v = g.govern(&s, "cap.shell.run", &Value::Null).await;
+        assert!(matches!(v, Verdict::Allow));
     }
 
     #[tokio::test]

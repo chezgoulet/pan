@@ -22,12 +22,18 @@
 //! ```
 
 pub mod fs;
+pub mod http;
 pub mod shell;
+pub mod skill;
 pub mod state;
+pub mod time;
 
 pub use fs::FsCaps;
+pub use http::HttpCaps;
 pub use shell::ShellCaps;
+pub use skill::SkillCaps;
 pub use state::StateCaps;
+pub use time::TimeCaps;
 
 use pan_core::components::{ComponentError, ComponentRegistry};
 
@@ -58,6 +64,24 @@ pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), Com
         Ok(Box::new(FsCaps::new(root)))
     })?;
     registry.register_capability_provider("cap.shell", |_cfg| Ok(Box::new(ShellCaps::new())))?;
+    registry.register_capability_provider("cap.http", |_cfg| Ok(Box::new(HttpCaps::new())))?;
+    registry.register_capability_provider("cap.time", |_cfg| Ok(Box::new(TimeCaps::new())))?;
+    registry.register_capability_provider("cap.skill", |cfg| {
+        let root = cfg
+            .settings
+            .get("root")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| ComponentError::Construction {
+                id: cfg.id.clone(),
+                reason: "cap.skill requires a `root` setting".into(),
+            })?;
+        let lib_dir = cfg
+            .settings
+            .get("lib_dir")
+            .and_then(|r| r.as_str())
+            .unwrap_or("/tmp/pan-skill-lib");
+        Ok(Box::new(SkillCaps::new(root, lib_dir)))
+    })?;
     Ok(())
 }
 
