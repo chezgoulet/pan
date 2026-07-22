@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Json, Response,
+        IntoResponse, Json, Redirect, Response,
     },
     routing::{get, post},
     Router,
@@ -164,6 +164,9 @@ pub struct GatewayResponse {
 
 /// Build the gateway router.
 pub fn router(state: Arc<GatewayState>) -> Router {
+    let static_dir = std::path::PathBuf::from(
+        std::env::var("PAN_GATEWAY_STATIC_DIR").unwrap_or_else(|_| "static".into()),
+    );
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/agents/{name}/goals", post(agent_goals))
@@ -171,7 +174,13 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         .route("/v1/agents", get(list_agents))
         .route("/v1/metrics", get(metrics_handler))
         .route("/health", get(health))
+        .route("/", get(index_handler))
+        .nest_service("/static", tower_http::services::ServeDir::new(&static_dir))
         .with_state(state)
+}
+
+async fn index_handler() -> impl axum::response::IntoResponse {
+    Redirect::permanent("/static/index.html")
 }
 
 // ---------------------------------------------------------------------------

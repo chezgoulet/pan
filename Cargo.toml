@@ -8,6 +8,7 @@ members = [
     "pan-cli",
     "pan-llm",
     "pan-gateway",
+    "pan-tui",
 ]
 resolver = "2"
 

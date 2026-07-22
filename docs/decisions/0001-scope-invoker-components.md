@@ -324,17 +324,42 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
   `PAN_LLM_*` so CI/offline skip it; the TLS wiring itself (ring provider + root
   store) is unit-tested with no network.
 
+**Additional landed items since the original pass:**
+
+- **OS-level skill sandbox** — bwrap/namespace isolation for Python skill
+  subprocesses. `SkillRunner::with_program` seam; graceful fallback when `bwrap`
+  is absent (`pan-skill/src/sandbox.rs`).
+- **Fully async daemon** — tokio `TcpListener`, async `begin_perceive`/`finish_perceive`
+  split, `tokio::spawn` per perceive. The `block_on` bridge is gone from the server
+  path (remains only in the synchronous `on_perceive` test fallback).
+- **Daemon ComponentRegistry unification** — `ResolveGovernor` owns `Arc<CapabilityRegistry>`
+  (no lifetime constraint); `SessionPipeline` struct holds governor + executor;
+  `dispatch_decision_async` takes `&SessionPipeline`.
+- **`skill.*` lifecycle capabilities** — `skill.create/edit/list/delete/run` in
+  `pan-cap/src/skill.rs`, registered in `register_builtin_caps`.
+- **Global config merge** — `~/.pan/config.toml` + `Agent.toml` via the
+  `pan-agent::merge` module.
+- **Streaming SSE** — `token_tx` channel in `Loop`, per-intent streaming in the
+  gateway (`run_agent_streaming` + `channel_to_sse`).
+- **Hardware safety veto** — `VetoSource` trait, `NoVeto`/`ChannelVeto`, third
+  `tokio::select!` arm between superseded and decide.
+- **Multi-agent orchestration** — `cap.agent.delegate` in `pan-agent`.
+- **Voice/streaming input** — `StreamingObservations` in `loop_engine.rs`.
+- **Property tests** — governor fuzzing, JSON round-trip, sequential dispatch.
+- **Gateway integration tests** — 10 HTTP endpoint tests with `tempfile` + `tower`.
+- **CI** — `.github/workflows/ci.yml`.
+- **Packaging** — README, INSTALL, CHANGELOG, example agents.
+
 Pending (next):
 
-- **OS-level skill sandbox** — wire `SkillRunner::with_program` to a real sandbox
-  launcher (`bwrap`/`nsjail` or namespaces + seccomp) so a skill's *ambient*
-  syscalls are denied, not just its unsanctioned Pan calls.
-- **Fully async daemon** — drop the `block_on` bridge: convert `server.rs` (TCP
-  loopback) and `session.rs` to tokio, and give `llm.rs` a non-blocking client.
-  Only then does one slow soul stop occupying a whole OS thread.
-- **Retire the daemon's hard-coded wiring** onto `ComponentRegistry`. Note the
-  daemon's `ResolveGovernor<'a>` borrows the capability registry, so this is a
-  real lifetime restructuring (build components into session-owned storage), not
-  a mechanical swap — Phase 2 work, done with care.
-- **`skill.*` lifecycle capabilities** (`skill.create/edit/list/delete`) wrapping
-  the runner — the Phase-7 management surface, itself governed.
+- **`ContextAssembler` trait** — formalize the ad-hoc `history` fragment injection
+  into a `ComponentRegistry`-selectable trait. Rolling conversation-history impl
+  first; memory retrieval (via `MemoryQuery`) deferred.
+- **TUI (terminal agent)** — new crate `pan-tui` with ratatui/crossterm. Reuses
+  `AssembledAgent` + `Loop` with `token_tx`.
+- **GUI (web frontend)** — static HTML/JS served by `pan-gateway` using the existing
+  SSE `/v1/chat/completions` API. Zero core vocabulary changes.
+- **Wasm plugin lifecycle** — register loaded wasm plugins into `Lifecycle`
+  (`plugind.rs` TODOs #62/#58).
+- **Non-blocking LLM HTTP client** — replace `std::net::TcpStream` in
+  `pan-llm::http` with an async transport.

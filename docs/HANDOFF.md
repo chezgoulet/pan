@@ -9,16 +9,24 @@ the always-loaded orientation is [`/CLAUDE.md`](../CLAUDE.md). Read both first._
 Pan is a **runnable, governed, interactive, tool-using agent assembled from
 `Agent.toml`** — with a real LLM brain (`provider.llm`) that *uses* tools — plus
 an OpenAI-compatible HTTP gateway, a Python skill runtime, and the Soul Protocol
-daemon. Everything below is **green**: 191 tests, workspace `fmt` + `clippy -D
+daemon. Everything below is **green**: 223 tests, workspace `fmt` + `clippy -D
 warnings` clean, the four `pan-core` compile-fail guards hold, and Soul Protocol
 conformance is 19/19.
 
-Sprints 1–6 are substantially landed (this commit is a crash-recovery
-consolidation; the branch was left with unstaged work after an OS crash).
+Sprints 1–6 are landed, and all ROADMAP deferred items are built. The remaining
+gaps are: a `ContextAssembler` trait, a TUI terminal app, a web frontend GUI,
+wasm plugin lifecycle wiring, and a non-blocking LLM HTTP client.
 
 This effort added these commits on top of `f16fd15` (each a coherent, green step):
 
 ```
+774cbe3 Phase 4c: StreamingObservations for voice/streaming input
+bef3c3a Phase 4b: multi-agent orchestration (cap.agent.delegate)
+294843c Phase 4a: packaging docs, safety veto, gateway integration tests
+6297313 Phase 3: streaming — token_tx in Loop, per-intent SSE gateway
+06835ef Phase 2: config wiring + daemon ComponentRegistry unification
+d26406e Phase 1 quick wins: CI, gateway tests, wasm plugin docs, daemon LLM converge
+9b256d3 docs: update HANDOFF for Sprint 1-6 consolidation
 6c1e6da Sprint 1-6 consolidation — gateway, async daemon, capabilities, providers, sandbox
 eea59a2 pan-llm — TLS transport (rustls), so provider.llm reaches cloud endpoints
 3601a8f pan-llm — tool-using LLM brain (provider.llm) plugged into the ReAct loop
@@ -47,7 +55,7 @@ The ADR's four decisions (D1–D4) are all landed. See the ADR's
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo test --workspace                              # 191 tests
+cargo test --workspace                              # 223 tests
 cargo fmt --all --check                             # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
@@ -165,29 +173,45 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
 ## What's next
 
-**Landed in this consolidation (Sprints 1–6):**
-- Sprint 1 (context assembly + cap.http + LLM robustness) ✓
-- Sprint 2 (cap.time, cap.fs glob/search, cap.state enrich) ✓
-- Sprint 3 (fully async daemon) ✓
-- Sprint 5A (bwrap OS sandbox) ✓
-- Sprint 5B (cap.skill lifecycle) ✓
-- Sprint 6A (Anthropic native provider) ✓
-- pan-gateway (new: axum HTTP server, OpenAI-compatible API) ✓
-- Observability (TracingSink, property tests) ✓
+**Landed across all sprints and phases:**
+- Sprints 1–6 (all items from the original ROADMAP) ✓
+- pan-gateway HTTP server with streaming SSE ✓
+- Global config merge (`~/.pan/config.toml` + `Agent.toml`) ✓
+- Daemon ComponentRegistry unification (SessionPipeline) ✓
+- Streaming provider contract (`token_tx` in `Loop`) ✓
+- Per-intent SSE in the gateway (`run_agent_streaming`) ✓
+- Packaging docs (README, INSTALL, CHANGELOG, examples) ✓
+- Hardware safety veto (VetoSource trait, ChannelVeto) ✓
+- Multi-agent orchestration (cap.agent.delegate) ✓
+- Voice/streaming input (StreamingObservations) ✓
+- Property tests (governor fuzzing, JSON round-trip) ✓
+- Gateway integration tests (10 HTTP endpoint tests) ✓
+- CI (`fmt` + `clippy` + `test` + `verify.sh`) ✓
 
-**Remaining from the ROADMAP:**
+**Genuinely remaining:**
 
-1. **Daemon LLM modernization** — the daemon's `llm.rs` uses a blocking client
-   on tokio threads. Replace with a non-blocking client or converge on `pan-llm`.
-2. **Sprint 4 — Daemon ComponentRegistry unification** — the daemon still
-   hand-wires `ResolveGovernor`; build from config through `ComponentRegistry`
-   like the rest of the workspace.
-3. **Sprint 6B — Streaming responses** — per-token SSE (requires a core-loop
-   callback extension). The gateway's SSE currently emits the full report.
-4. **Sprint 7 — Wasm plugins** (`plugind.rs` TODOs #62/#58): wasmtime
-   instantiation, health probes.
-5. **Deferred items** (`ROADMAP`): packaging/versioning, multi-agent orchestration,
-   voice channel, hardware safety veto.
+1. **Context Assembler trait** (ROADMAP §A) — the biggest functional gap.
+   A `ContextAssembler` trait registered in ComponentRegistry, with a rolling
+   conversation-history impl. The CLI currently injects a `history` fragment
+   ad-hoc; formalize it. Memory retrieval (querying `cap.state` via `MemoryQuery`)
+   is the deferred variant. [effort: M]
 
-Before starting any of these, re-read the ADR and confirm the current `git log`
-matches this doc's Status (update the Status if it has moved).
+2. **TUI (terminal UI, new crate `pan-tui`)** — a ratatui/crossterm terminal app
+   with scrollable conversation history, capability output panel, and streaming
+   token display. Reuses `AssembledAgent` + `Loop` with `token_tx`. [effort: M]
+
+3. **GUI (web frontend, served by pan-gateway)** — a static HTML/JS single-page
+   app that uses the existing `/v1/chat/completions` SSE endpoint. Zero core
+   changes; ~10 lines of backend code for static file serving. [effort: S]
+
+4. **Wasm plugins** (Sprint 7) — `plugind.rs` TODOs #62/#58: register loaded
+   wasm plugins into the lifecycle and implement real health probes. [effort: S]
+
+5. **True async HTTP client** — both `pan-llm::http` and the daemon's LLM use
+   blocking `TcpStream` inside `async fn`. Replace with a non-blocking HTTP
+   client (or add an async transport to the existing one). [effort: M]
+
+6. **Fuzzing / load testing** — wire JSON fuzzing, daemon load test, stream
+   cancellation fuzzing. [effort: M]
+
+Before starting any of these, confirm `git log` matches this doc's Status.

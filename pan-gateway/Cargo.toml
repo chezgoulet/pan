@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["macros"] }
-tower-http = { version = "0.7", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-stream = "0.1"
