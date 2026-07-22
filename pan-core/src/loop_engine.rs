@@ -54,6 +54,8 @@ pub enum RunEnd {
     /// The provider kept invoking capabilities without ever concluding and hit
     /// [`MAX_TOOL_STEPS`]; the span was stopped to guarantee termination.
     StepLimit,
+    /// A hardware safety veto or external abort signal fired during the span.
+    Vetoed { reason: String },
     /// The observation stream ended without a conclusion.
     StreamExhausted,
 }
@@ -108,6 +110,57 @@ impl Observations for Once {
     }
 }
 
+/// Source of abort signals for the loop. A hardware safety controller, signal
+/// handler, or watchdog feeds a veto through this trait. When `vetoed()`
+/// resolves, the in-flight `decide` is dropped unexecuted and the span ends
+/// with [`RunEnd::Vetoed`]. The default never fires.
+#[async_trait::async_trait]
+pub trait VetoSource: Send + Sync {
+    /// Resolves with a human-readable reason when a veto is signalled, or
+    /// never resolves (the default — no veto configured).
+    async fn vetoed(&self) -> Option<String> {
+        std::future::pending().await
+    }
+}
+
+/// Default veto source — never fires. Equivalent to "no veto configured."
+pub struct NoVeto;
+#[async_trait::async_trait]
+impl VetoSource for NoVeto {}
+
+/// Static reference to a no-op veto source, for `Loop` construction sites
+/// that don't configure a veto.
+pub const NO_VETO: &NoVeto = &NoVeto;
+
+/// A channel-based veto source: set a `watch::Sender<bool>` to `true` to
+/// abort the current span. Clones of the receiver can be shared across
+/// loops.
+pub struct ChannelVeto {
+    rx: tokio::sync::watch::Receiver<bool>,
+}
+
+impl ChannelVeto {
+    pub fn new(rx: tokio::sync::watch::Receiver<bool>) -> Self {
+        Self { rx }
+    }
+}
+
+#[async_trait::async_trait]
+impl VetoSource for ChannelVeto {
+    async fn vetoed(&self) -> Option<String> {
+        if *self.rx.borrow() {
+            return Some("external abort signal".into());
+        }
+        let mut rx = self.rx.clone();
+        loop {
+            let _ = rx.changed().await;
+            if *rx.borrow() {
+                return Some("external abort signal".into());
+            }
+        }
+    }
+}
+
 /// The loop driver. Borrows the provider, the assembled context, and the wired
 /// pipeline; runs spans against an [`Observations`] source.
 pub struct Loop<'a> {
@@ -125,6 +178,10 @@ pub struct Loop<'a> {
     /// of only being accumulated in the final `RunReport`. This enables
     /// per-token / per-intent SSE streaming in the gateway.
     pub token_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Abort signal source. When `vetoed()` resolves, the in-flight decide
+    /// is dropped and the span ends with [`RunEnd::Vetoed`]. Use [`NoVeto`]
+    /// when no veto is configured.
+    pub veto_source: &'a dyn VetoSource,
 }
 
 impl<'a> Loop<'a> {
@@ -184,7 +241,16 @@ impl<'a> Loop<'a> {
                             superseded_by: newer.revision,
                         });
                         current = newer;
-                        continue 'goal; // re-decide on the newer revision, fresh context; nothing enacted.
+                        continue 'goal;
+                    }
+                    reason = self.veto_source.vetoed() => {
+                        let reason = reason.unwrap_or_else(|| "veto fired".into());
+                        self.events.emit(EventKind::Abandoned {
+                            goal_id: current.id.clone(),
+                            superseded_by: current.revision,
+                        });
+                        report.end = Some(RunEnd::Vetoed { reason });
+                        return report;
                     }
                     decision = self.provider.decide(&snapshot, &working_ctx, &caps) => decision,
                 };
@@ -433,6 +499,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -495,6 +562,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -542,6 +610,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -640,6 +709,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = SupersedeAfter {
             first: Some(goal("g", 0)),
@@ -745,6 +815,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -794,6 +865,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: NO_VETO,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;

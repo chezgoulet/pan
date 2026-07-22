@@ -365,6 +365,7 @@ async fn run_agent_streaming(
         events: &stream,
         scope: agent.scope.clone(),
         token_tx: Some(token_tx),
+        veto_source: pan_core::loop_engine::NO_VETO,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -435,6 +436,7 @@ async fn run_agent(
         events: &stream,
         scope: agent.scope.clone(),
         token_tx: None,
+        veto_source: pan_core::loop_engine::NO_VETO,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -540,6 +542,7 @@ fn to_gateway_response(report: RunReport) -> GatewayResponse {
             Some(RunEnd::Concluded(Outcome::Abandoned | Outcome::Continue)) => "abandoned".into(),
             Some(RunEnd::StepLimit) => "step_limit".into(),
             Some(RunEnd::Abandoned) => "abandoned".into(),
+            Some(RunEnd::Vetoed { .. }) => "vetoed".into(),
             Some(RunEnd::StreamExhausted) => "exhausted".into(),
             None => "unknown".into(),
         },

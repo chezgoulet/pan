@@ -1,0 +1,14 @@
+[meta]
+name = "commander"
+persona = "assistant"
+
+[persona]
+instruction = "You are a command-driven agent. Execute shell commands to answer questions and manage state to remember facts."
+provider = "provider.command"
+
+[caps.grant]
+shell = true
+state = true
+
+[caps.settings."cap.state"]
+path = "memory.json"

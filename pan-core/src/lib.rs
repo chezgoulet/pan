@@ -130,6 +130,7 @@ mod tests {
             events: &stream,
             scope: Scope::system(),
             token_tx: None,
+            veto_source: crate::loop_engine::NO_VETO,
         };
         let mut obs = Once(Some(Goal {
             id: "run-1".into(),
@@ -244,6 +245,7 @@ mod tests {
                 events: &stream,
                 scope: Scope::system(),
                 token_tx: None,
+                veto_source: crate::loop_engine::NO_VETO,
             };
             let mut obs = Once(Some(Goal {
                 id: "g".into(),

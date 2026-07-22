@@ -1,61 +1,48 @@
-# Pan — the mind daemon and its core
+# Pan — agent harness
 
-Pan is an agent harness in Rust. The same core, with different plugin
-sets, drives a chat assistant, game-NPC brains, and headless trend
-detection. **The reasoning model is a plugin** — the core contains no
-prompt, no token format, no tool-call convention. That single decision
-is what lets a behavior tree or a rules engine stand in for an LLM
-without pretending to be one.
-
-Sprint 01's Pan workstream delivers the **daemon**: a server that
-speaks the Soul Protocol over TCP loopback NDJSON, hosts souls, decides
-what to do, and ships the decision back to the host.
-
-## Workspace
-
-```
-pan/
-├── pan-core/         The irreducible core: vocabulary, dispatch pipeline,
-│                     loop, event stream, plugin lifecycle. (Wave 0; settled.)
-├── pan-daemon/       The Soul Protocol server. `pan serve`, fixtures, tests.
-└── Cargo.toml        Workspace manifest.
-```
+Pan is an agent harness in Rust. One core, driven by different plugin sets, powers a
+chat assistant, game-NPC brains, and headless trend detection. **The central design
+decision: the reasoning model is a plugin.** The core contains no prompt, no token
+format, and no tool-call convention.
 
 ## Quick start
 
 ```sh
-cargo build
-cargo test                                  # 68 tests pass
-./target/debug/pan check-conformance        # 15 fixtures, 10 message types OK
-./target/debug/pan serve --port 40707       # or REACHLOCK_PAN_PORT
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# Build everything
+cargo build --workspace
+
+# Run tests
+cargo test --workspace
+
+# Interactive agent
+cargo run -p pan-cli --bin pan-agent -- run examples/agents/echo.toml
+
+# HTTP gateway
+cargo run -p pan-gateway --bin pan-gateway -- --agents-dir examples/agents
 ```
 
-## Conformance
+## Crates
 
-Pan and the Godot host share the same wire contract. The 15 fixtures in
-`pan-daemon/tests/fixtures/` are byte-identical to
-`reachlock/godot/framework/protocol/fixtures/*.json` and validated by
-both sides in their own CI. The Python check lives at
-`reachlock/scripts/check_soul_protocol.py`; the Rust check is
-`pan-daemon/tests/conformance.rs`.
+| Crate | Role |
+|---|---|
+| `pan-core` | Core vocabulary, async pipeline, governance, ReAct loop |
+| `pan-daemon` | Soul Protocol game-NPC daemon (`pan serve`) |
+| `pan-agent` | `Agent.toml` manifest + assembler |
+| `pan-cap` | Capability components: fs, shell, http, state, time, skill |
+| `pan-cli` | Interactive CLI (`pan-agent run`) |
+| `pan-llm` | LLM providers: OpenAI-compatible + Anthropic, TLS |
+| `pan-skill` | Python skill runtime + bwrap sandbox |
+| `pan-gateway` | OpenAI-compatible HTTP gateway with SSE streaming |
 
-## Sprint 01 (this) — what landed
+## Documentation
 
-- **P1**: `pan serve` daemon. TCP loopback, NDJSON, single-connection.
-  Hello / welcome / register_capabilities / instantiate_soul /
-  release_soul / perceive / decision / shutdown lifecycle.
-- **P2**: Rules provider end-to-end through validate → govern → enact.
-  A `Trigger::Event { topic, .. }` matching a soul's `when_event_topic`
-  rule fires the rule's `then_invoke` (an `ActionIntent::Invoke`).
-- **P4**: Capability registry from the host's `register_capabilities`.
-  The provider's `decide` only chooses among registered capabilities;
-  `validate` rejects `Invoke` of an unregistered one with
-  `error code: "unknown_capability"` (conformance fixture 09).
-- **P5**: 15-fixture conformance suite in Pan's CI. All 10 message
-  types covered.
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — session continuity, crate map, gotchas
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — sprint plan, what's left to build
+- [`docs/INSTALL.md`](docs/INSTALL.md) — installation guide
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — user-facing changes
 
-Out of scope (deferred):
+## License
 
-- LLM provider (P3) — the rules provider is enough for M1.
-- BYOK and local llama.cpp.
-- REACHLOCK client (the Godot side owns this).
+MIT OR Apache-2.0

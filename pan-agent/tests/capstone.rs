@@ -81,6 +81,7 @@ root = "{root}"
         events: &stream,
         scope: agent.scope.clone(),
         token_tx: None,
+        veto_source: pan_core::loop_engine::NO_VETO,
     };
 
     // Drive one span with the goal the rule reacts to.

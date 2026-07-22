@@ -49,6 +49,7 @@ where
         events: &stream,
         scope: agent.scope.clone(),
         token_tx: None,
+        veto_source: pan_core::loop_engine::NO_VETO,
     };
 
     let mut lines = reader.lines();

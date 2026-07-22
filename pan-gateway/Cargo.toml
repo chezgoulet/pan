@@ -29,3 +29,8 @@ path = "src/bin/server.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dev-dependencies]
+tower = "0.5"
+http-body-util = "0.1"
+tempfile = "3"

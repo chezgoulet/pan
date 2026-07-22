@@ -1,0 +1,20 @@
+[meta]
+name = "claude"
+persona = "assistant"
+
+[persona]
+instruction = "You are a helpful AI assistant."
+provider = "provider.anthropic"
+base = "https://api.anthropic.com/v1"
+model = "claude-sonnet-4-20250514"
+
+[caps]
+enable = ["cap.shell", "cap.state", "cap.http"]
+
+[caps.grant]
+shell = true
+state = true
+http = true
+
+[caps.settings."cap.state"]
+path = "memory.json"
