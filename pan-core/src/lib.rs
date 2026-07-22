@@ -45,7 +45,10 @@ pub mod prelude {
     pub use crate::events::{Event, EventKind, EventSink, EventStream, MemorySink, StageStatus};
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
     pub use crate::invoker::{InvokeError, PipelineInvoker, ScopedInvoker};
-    pub use crate::loop_engine::{Loop, Observations, Once, RunEnd, RunReport};
+    pub use crate::loop_engine::{
+        ChannelVeto, Loop, NoVeto, Observations, Once, RunEnd, RunReport, StreamingObservations,
+        VetoSource, NO_VETO,
+    };
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError,
         ScopedGovernor, Verdict,

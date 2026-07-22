@@ -110,6 +110,60 @@ impl Observations for Once {
     }
 }
 
+/// A streaming observation source that yields evolving goal revisions from
+/// a channel. Each new goal with the same `id` and a higher `revision`
+/// supersedes the previous one — the in-flight `decide` is cancelled and
+/// the loop re-decides on the newer revision. Different goal ids start a
+/// new span.
+///
+/// This is designed for voice/streaming input where partial ASR is
+/// delivered as evolving goal revisions.
+pub struct StreamingObservations {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Goal>,
+    pending: Option<Goal>,
+}
+
+impl StreamingObservations {
+    /// Create a new streaming observations source and return the sender
+    /// half. Callers push goals through the sender as they arrive.
+    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedSender<Goal>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self { rx, pending: None }, tx)
+    }
+}
+
+#[async_trait::async_trait]
+impl Observations for StreamingObservations {
+    async fn next_goal(&mut self) -> Option<Goal> {
+        // Yield any pending goal from a prior supersession first.
+        if let Some(g) = self.pending.take() {
+            return Some(g);
+        }
+        self.rx.recv().await
+    }
+
+    async fn superseded(&mut self, current: &Goal) -> Goal {
+        loop {
+            match self.rx.recv().await {
+                Some(newer) if current.superseded_by(&newer) => {
+                    self.pending = None;
+                    return newer;
+                }
+                Some(other) => {
+                    // Different goal id or older revision — buffer for next_goal.
+                    self.pending = Some(other);
+                    // But the loop is waiting for a supersession of the current
+                    // goal. Continue waiting for a matching revision.
+                }
+                None => {
+                    // Channel closed — never supersede.
+                    std::future::pending().await
+                }
+            }
+        }
+    }
+}
+
 /// Source of abort signals for the loop. A hardware safety controller, signal
 /// handler, or watchdog feeds a veto through this trait. When `vetoed()`
 /// resolves, the in-flight `decide` is dropped unexecuted and the span ends
