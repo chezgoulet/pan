@@ -78,6 +78,7 @@ async fn wave_0_exit() {
         scope: Scope::system(),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
     let mut obs = Once(Some(Goal {
         id: "run-1".into(),

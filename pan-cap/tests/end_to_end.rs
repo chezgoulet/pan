@@ -151,6 +151,7 @@ async fn a_provider_driving_the_loop_writes_a_real_file() {
         scope: Scope::new("persona.assistant"),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
     let mut obs = Once(Some(Goal {
         id: "g".into(),

@@ -43,6 +43,49 @@ pub const TOOL_RESULT_CHANNEL: &str = "tool_result";
 /// later; the core only guarantees the loop terminates).
 const MAX_TOOL_STEPS: u32 = 8;
 
+/// How many consecutive identical tool calls trigger the stall detector.
+/// Prevents the agent from repeating the same failing invocation forever.
+const MAX_CONSECUTIVE_IDENTICAL_CALLS: u32 = 4;
+
+/// Tracks repeated identical tool invocations. When the same capability + args
+/// repeats N times consecutively, the detector fires — signalling a stall.
+/// Call [`feed`](Self::feed) after each invocation and check
+/// [`is_stalled`](Self::is_stalled) before the next one.
+pub struct StallDetector {
+    last_cap: String,
+    last_args: String,
+    count: u32,
+}
+
+impl Default for StallDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StallDetector {
+    pub fn new() -> Self {
+        Self {
+            last_cap: String::new(),
+            last_args: String::new(),
+            count: 0,
+        }
+    }
+
+    /// Record an invocation and return true if the agent is stalled.
+    pub fn feed(&mut self, capability: &str, args: &crate::schema::Value) -> bool {
+        let args_str = args.to_string();
+        if self.last_cap == capability && self.last_args == args_str {
+            self.count += 1;
+        } else {
+            self.last_cap = capability.to_string();
+            self.last_args = args_str;
+            self.count = 1;
+        }
+        self.count >= MAX_CONSECUTIVE_IDENTICAL_CALLS
+    }
+}
+
 /// Why a run span ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -236,6 +279,10 @@ pub struct Loop<'a> {
     /// is dropped and the span ends with [`RunEnd::Vetoed`]. Use [`NoVeto`]
     /// when no veto is configured.
     pub veto_source: &'a dyn VetoSource,
+    /// Optional stall detector. When the agent invokes the same capability
+    /// with identical args N times consecutively, the detector adds a
+    /// context fragment noting the stall so the provider can change approach.
+    pub stall_detector: Option<std::sync::Mutex<StallDetector>>,
 }
 
 impl<'a> Loop<'a> {
@@ -380,6 +427,20 @@ impl<'a> Loop<'a> {
                     args,
                     correlation,
                 } => {
+                    // Stall detection: feed the detector and add a warning
+                    // fragment if the same call repeats.
+                    if let Some(ref sd) = self.stall_detector {
+                        if sd.lock().unwrap().feed(capability, args) {
+                            tool_results.push(Fragment {
+                                channel: TOOL_RESULT_CHANNEL.to_string(),
+                                body: format!(
+                                    r#"{{"stall":true,"capability":"{capability}","message":"same capability+args repeated {} times — try a different approach"}}"#,
+                                    MAX_CONSECUTIVE_IDENTICAL_CALLS
+                                ),
+                            });
+                        }
+                    }
+
                     let req = crate::pipeline::EffectRequest {
                         capability: capability.clone(),
                         args: args.clone(),
@@ -554,6 +615,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -617,6 +679,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -665,6 +728,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -764,6 +828,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = SupersedeAfter {
             first: Some(goal("g", 0)),
@@ -870,6 +935,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -920,6 +986,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;

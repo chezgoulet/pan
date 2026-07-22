@@ -151,6 +151,7 @@ async fn the_model_calls_a_tool_sees_the_result_and_answers() {
         scope: Scope::system(),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
 
     let goal = Goal {

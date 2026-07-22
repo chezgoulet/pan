@@ -82,6 +82,7 @@ root = "{root}"
         scope: agent.scope.clone(),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
 
     // Drive one span with the goal the rule reacts to.

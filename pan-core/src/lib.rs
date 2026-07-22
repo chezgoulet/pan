@@ -46,8 +46,8 @@ pub mod prelude {
     pub use crate::handles::{Fact, MemoryQuery, MemoryStore, Query};
     pub use crate::invoker::{InvokeError, PipelineInvoker, ScopedInvoker};
     pub use crate::loop_engine::{
-        ChannelVeto, Loop, NoVeto, Observations, Once, RunEnd, RunReport, StreamingObservations,
-        VetoSource, NO_VETO,
+        ChannelVeto, Loop, NoVeto, Observations, Once, RunEnd, RunReport, StallDetector,
+        StreamingObservations, VetoSource, NO_VETO,
     };
     pub use crate::pipeline::{
         AllowAll, EchoExecutor, EffectRequest, Executor, Governor, Pipeline, PipelineError,
@@ -134,6 +134,7 @@ mod tests {
             scope: Scope::system(),
             token_tx: None,
             veto_source: crate::loop_engine::NO_VETO,
+            stall_detector: None,
         };
         let mut obs = Once(Some(Goal {
             id: "run-1".into(),
@@ -249,6 +250,7 @@ mod tests {
                 scope: Scope::system(),
                 token_tx: None,
                 veto_source: crate::loop_engine::NO_VETO,
+                stall_detector: None,
             };
             let mut obs = Once(Some(Goal {
                 id: "g".into(),

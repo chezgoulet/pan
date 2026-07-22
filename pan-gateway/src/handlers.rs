@@ -375,6 +375,7 @@ async fn run_agent_streaming(
         scope: agent.scope.clone(),
         token_tx: Some(token_tx),
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -446,6 +447,7 @@ async fn run_agent(
         scope: agent.scope.clone(),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;

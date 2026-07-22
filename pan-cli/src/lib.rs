@@ -50,6 +50,7 @@ where
         scope: agent.scope.clone(),
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
+        stall_detector: None,
     };
 
     let mut lines = reader.lines();
