@@ -348,10 +348,22 @@ pub async fn post_json_ex_async(
             let delay_ms = 500 * 2u64.pow(attempt - 1);
             sleep(Duration::from_millis(delay_ms + rand_delay(delay_ms))).await;
         }
-        let request = build_request_ex(&target.host, &target.full_path, body, &extra_headers.iter().map(|(k,v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
+        let request = build_request_ex(
+            &target.host,
+            &target.full_path,
+            body,
+            &extra_headers
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.clone()))
+                .collect::<Vec<_>>(),
+        );
         let raw = match target.scheme {
-            Scheme::Http => async_http_exchange(&target.host, target.port, timeout, request.as_bytes()).await?,
-            Scheme::Https => async_https_exchange(&target.host, target.port, timeout, request.as_bytes()).await?,
+            Scheme::Http => {
+                async_http_exchange(&target.host, target.port, timeout, request.as_bytes()).await?
+            }
+            Scheme::Https => {
+                async_https_exchange(&target.host, target.port, timeout, request.as_bytes()).await?
+            }
         };
         match parse_response(&raw) {
             Ok(val) => return Ok(val),
@@ -382,7 +394,10 @@ async fn async_connect(host: &str, port: u16, timeout: Duration) -> Result<Async
         .map_err(|e| format!("connect: {e}"))
 }
 
-async fn async_read_body(stream: &mut (impl AsyncReadExt + Unpin), timeout: Duration) -> Result<Vec<u8>, String> {
+async fn async_read_body(
+    stream: &mut (impl AsyncReadExt + Unpin),
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {

@@ -11,7 +11,7 @@ use pan_core::components::{ComponentConfig, ComponentError, ComponentRegistry};
 use pan_core::config::Config;
 use pan_core::pipeline::ScopedGovernor;
 use pan_core::registry::ConflictError;
-use pan_core::schema::{Provider, Scope, Value};
+use pan_core::schema::{ContextAssembler, Provider, Scope, Value};
 use pan_core::toolbox::Toolbox;
 
 use crate::manifest::{AgentManifest, ManifestError};
@@ -36,6 +36,8 @@ pub struct AssembledAgent {
     /// The capability components from `[caps.enable]`: the pipeline's capability
     /// registry (via [`Toolbox::registry`]) and its executor (`&toolbox`).
     pub toolbox: Toolbox,
+    /// Optional context assembler for building/governing the span context.
+    pub context_assembler: Option<Box<dyn ContextAssembler>>,
 }
 
 /// Assemble an agent from its manifest, building components out of `registry`.
@@ -86,6 +88,21 @@ pub fn assemble(
             .map_err(AssembleError::CapabilityConflict)?;
     }
 
+    // Context assembler (optional): builds the span context from conversation
+    // history or other sources. Selected by `[persona] context = "..."`.
+    let context_assembler = manifest
+        .persona
+        .settings
+        .get("context")
+        .and_then(|v| v.as_str())
+        .map(|id| {
+            let cfg = ComponentConfig::bare(id.to_string());
+            registry
+                .build_context_assembler(&cfg)
+                .map_err(AssembleError::ContextAssembler)
+        })
+        .transpose()?;
+
     Ok(AssembledAgent {
         name: manifest.meta.name.clone(),
         instruction: manifest.persona.instruction.clone(),
@@ -93,6 +110,7 @@ pub fn assemble(
         governor,
         provider,
         toolbox,
+        context_assembler,
     })
 }
 
@@ -128,6 +146,20 @@ pub fn assemble_with_config(
             .map_err(AssembleError::CapabilityConflict)?;
     }
 
+    // Context assembler (optional).
+    let context_assembler = manifest
+        .persona
+        .settings
+        .get("context")
+        .and_then(|v| v.as_str())
+        .map(|id| {
+            let cfg = ComponentConfig::bare(id.to_string());
+            registry
+                .build_context_assembler(&cfg)
+                .map_err(AssembleError::ContextAssembler)
+        })
+        .transpose()?;
+
     Ok(AssembledAgent {
         name: manifest.meta.name.clone(),
         instruction: manifest.persona.instruction.clone(),
@@ -135,6 +167,7 @@ pub fn assemble_with_config(
         governor,
         provider,
         toolbox,
+        context_assembler,
     })
 }
 
@@ -166,6 +199,8 @@ pub enum AssembleError {
     Capability(ComponentError),
     /// Two enabled capability components claimed the same capability id.
     CapabilityConflict(ConflictError),
+    /// The context assembler could not be built (unknown id).
+    ContextAssembler(ComponentError),
 }
 
 impl std::fmt::Display for AssembleError {
@@ -175,6 +210,7 @@ impl std::fmt::Display for AssembleError {
             AssembleError::Provider(e) => write!(f, "assembling provider: {e}"),
             AssembleError::Capability(e) => write!(f, "assembling capability: {e}"),
             AssembleError::CapabilityConflict(e) => write!(f, "capability conflict: {e}"),
+            AssembleError::ContextAssembler(e) => write!(f, "context assembler: {e}"),
         }
     }
 }

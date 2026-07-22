@@ -818,9 +818,12 @@ version = "1.0"
         .unwrap();
 
         let (plugins, cap_index) = discover_all(&[dir]).unwrap();
-        let entries: Vec<plugin_set::PluginEntry> = plugins.iter().map(|p| plugin_set::PluginEntry {
-            id: p.id().to_string(),
-        }).collect();
+        let entries: Vec<plugin_set::PluginEntry> = plugins
+            .iter()
+            .map(|p| plugin_set::PluginEntry {
+                id: p.id().to_string(),
+            })
+            .collect();
         let set = PluginSet::new(entries, cap_index);
 
         assert_eq!(set.len(), 2);

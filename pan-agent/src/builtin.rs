@@ -36,6 +36,7 @@ pub fn builtin_registry() -> ComponentRegistry {
     pan_llm::register_llm_providers(&mut reg).expect("unique builtin provider id");
     pan_cap::register_builtin_caps(&mut reg).expect("unique builtin capability ids");
     crate::agent::register_agent_cap(&mut reg);
+    crate::context::register_assemblers(&mut reg);
     reg
 }
 

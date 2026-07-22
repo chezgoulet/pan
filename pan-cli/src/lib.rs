@@ -54,10 +54,6 @@ where
 
     let mut lines = reader.lines();
     let mut turn: u64 = 0;
-    // Rolling transcript of prior (user, assistant) turns, replayed as messages
-    // between the system prompt and the current user turn so the agent remembers
-    // the conversation across spans.
-    let mut history: Vec<Value> = Vec::new();
     while let Some(raw) = lines.next_line().await? {
         let line = raw.trim();
         if line.is_empty() {
@@ -77,13 +73,17 @@ where
                 content: line.to_string(),
             },
         };
-        let ctx = if history.is_empty() {
-            Context::default()
-        } else {
-            Context::default().with("history", serde_json::to_string(&history).unwrap())
+        let ctx = match &agent.context_assembler {
+            Some(assembler) => assembler.assemble(&goal).await,
+            None => Context::default(),
         };
+        let goal_for_commit = goal.clone();
         let mut obs = Once(Some(goal));
         let report = lp.run_span(&mut obs, &ctx).await;
+
+        if let Some(assembler) = &agent.context_assembler {
+            assembler.commit(&goal_for_commit, &report).await;
+        }
 
         for body in &report.expressed {
             writer.write_all(body.as_bytes()).await?;
@@ -102,11 +102,6 @@ where
                 .await?;
         }
         writer.flush().await?;
-
-        history.push(serde_json::json!({"role": "user", "content": line}));
-        for body in &report.expressed {
-            history.push(serde_json::json!({"role": "assistant", "content": body}));
-        }
     }
 
     stream.shutdown();

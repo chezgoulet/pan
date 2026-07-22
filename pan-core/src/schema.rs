@@ -252,6 +252,24 @@ impl Decision {
     }
 }
 
+/// Assembles a [`Context`] for a [`Goal`] before the loop runs a span.
+///
+/// Implementations own their state (e.g., rolling conversation history) via
+/// interior mutability and are `Send + Sync` so the registry can build them
+/// once and share across channel loops. A [`ComponentRegistry`] family
+/// (`context_assemblers`) selects the impl from `Agent.toml`.
+#[async_trait::async_trait]
+pub trait ContextAssembler: Send + Sync {
+    fn id(&self) -> &str;
+
+    /// Build the context the provider will see for `goal`.
+    async fn assemble(&self, goal: &Goal) -> Context;
+
+    /// Called after a span completes so the assembler can record the turn.
+    /// The default is no-op.
+    async fn commit(&self, _goal: &Goal, _report: &crate::loop_engine::RunReport) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

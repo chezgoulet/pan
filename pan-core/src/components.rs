@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use crate::pipeline::{Executor, Governor};
-use crate::schema::{Provider, Value};
+use crate::schema::{ContextAssembler, Provider, Value};
 use crate::toolbox::CapabilityProvider;
 
 /// The configuration slice handed to a component factory: the id it was named by
@@ -94,6 +94,7 @@ pub struct ComponentRegistry {
     governors: HashMap<String, Factory<dyn Governor>>,
     executors: HashMap<String, Factory<dyn Executor>>,
     capability_providers: HashMap<String, Factory<dyn CapabilityProvider>>,
+    context_assemblers: HashMap<String, Factory<dyn ContextAssembler>>,
 }
 
 impl ComponentRegistry {
@@ -184,6 +185,28 @@ impl ComponentRegistry {
         )
     }
 
+    /// Register a [`ContextAssembler`] factory under a config id (e.g.
+    /// `"context.rolling_history"`) — selectable from `Agent.toml` via
+    /// `[persona] context = "context.rolling_history"`.
+    pub fn register_context_assembler<F>(
+        &mut self,
+        id: impl Into<String>,
+        factory: F,
+    ) -> Result<(), ComponentError>
+    where
+        F: Fn(&ComponentConfig) -> Result<Box<dyn ContextAssembler>, ComponentError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        insert_unique(
+            "context_assembler",
+            &mut self.context_assemblers,
+            id.into(),
+            Box::new(factory),
+        )
+    }
+
     // --- construction ------------------------------------------------------
 
     /// Build the [`Provider`] configured under `cfg.id`.
@@ -216,6 +239,14 @@ impl ComponentRegistry {
         cfg: &ComponentConfig,
     ) -> Result<Box<dyn CapabilityProvider>, ComponentError> {
         build("capability", &self.capability_providers, cfg)
+    }
+
+    /// Build the [`ContextAssembler`] configured under `cfg.id`.
+    pub fn build_context_assembler(
+        &self,
+        cfg: &ComponentConfig,
+    ) -> Result<Box<dyn ContextAssembler>, ComponentError> {
+        build("context_assembler", &self.context_assemblers, cfg)
     }
 
     /// The provider ids this binary knows how to build — for diagnostics and to

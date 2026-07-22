@@ -31,6 +31,7 @@ pub mod agent;
 pub mod assembler;
 pub mod builtin;
 pub mod command;
+pub mod context;
 pub mod echo;
 pub mod manifest;
 pub mod merge;

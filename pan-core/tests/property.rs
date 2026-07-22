@@ -122,6 +122,7 @@ fn daemon_wire_parser_is_robust() {
 }
 
 /// A minimal pseudo-random number generator that doesn't require `rand`.
+/// A minimal pseudo-random number generator that doesn't require `rand`.
 fn simple_rng() -> impl FnMut() -> u64 {
     let mut state: u64 = std::time::UNIX_EPOCH
         .elapsed()
@@ -133,4 +134,63 @@ fn simple_rng() -> impl FnMut() -> u64 {
             .wrapping_add(1442695040888963407);
         state >> 33
     }
+}
+
+/// Test that context fragment ordering is preserved through construction.
+#[test]
+fn context_fragment_accumulation_is_ordered() {
+    fn arbitrary_context() -> impl Strategy<Value = Vec<(String, String)>> {
+        proptest::collection::vec(
+            ("[a-z.]{1,30}", "[ -~]{0,200}"), // (channel, body) pairs
+            0usize..50,
+        )
+    }
+    proptest!(|(fragments in arbitrary_context())| {
+        let mut ctx = pan_core::schema::Context::default();
+        for (channel, body) in &fragments {
+            ctx = ctx.with(channel.clone(), body.clone());
+        }
+        assert_eq!(ctx.fragments.len(), fragments.len());
+        for (i, (ch, body)) in fragments.iter().enumerate() {
+            assert_eq!(ctx.fragments[i].channel, *ch);
+            assert_eq!(ctx.fragments[i].body, *body);
+        }
+    });
+}
+
+/// Verify that goal supersession logic is correct under arbitrary revision
+/// numbers and goal ids.
+#[test]
+fn goal_supersession_is_correct() {
+    proptest!(|(
+        id in "[a-z0-9_-]{1,20}",
+        rev_a: u64,
+        rev_b: u64,
+    )| {
+        let a = pan_core::schema::Goal {
+            id: id.clone(),
+            revision: rev_a,
+            objective: "o".into(),
+            trigger: pan_core::schema::Trigger::Tick { sequence: 0 },
+        };
+        let b = pan_core::schema::Goal {
+            id: id.clone(),
+            revision: rev_b,
+            objective: "o".into(),
+            trigger: pan_core::schema::Trigger::Tick { sequence: 0 },
+        };
+        // Only higher revision with same id supersedes.
+        assert_eq!(a.superseded_by(&b), rev_a < rev_b && id == b.id);
+        assert_eq!(b.superseded_by(&a), rev_b < rev_a && id == a.id);
+
+        // Different id never supersedes, regardless of revision.
+        let c = pan_core::schema::Goal {
+            id: "other".into(),
+            revision: rev_b,
+            objective: "o".into(),
+            trigger: pan_core::schema::Trigger::Tick { sequence: 0 },
+        };
+        assert!(!a.superseded_by(&c));
+        assert!(!c.superseded_by(&a));
+    });
 }
