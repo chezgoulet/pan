@@ -23,10 +23,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-stream = "0.1"
 futures = "0.3"
 
-[[bin]]
-name = "pan-gateway"
-path = "src/bin/server.rs"
-
 [lints.rust]
 unsafe_code = "forbid"
 

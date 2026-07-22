@@ -22,3 +22,81 @@ pub mod handlers;
 pub mod pool;
 
 pub use pool::AgentPool;
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::handlers::GatewayState;
+use pan_core::config::Config;
+
+/// Run the gateway server. Extracted from the original `pan-gateway` binary
+/// so it can be called from the unified `pan` binary.
+pub async fn run_gateway(
+    agents_dir: &std::path::Path,
+    port: u16,
+    auth_token: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let config_path = PathBuf::from(home).join(".pan").join("config.toml");
+    let global_config = Config::load(&config_path).ok();
+    if global_config.is_some() {
+        tracing::info!("loaded global config from {config_path:?}");
+    }
+
+    tracing::info!("loading agents from {agents_dir:?}");
+    let pool = match AgentPool::load_with_config(agents_dir, global_config.as_ref()) {
+        Ok(p) => {
+            let names: Vec<&str> = p.names().collect();
+            tracing::info!("loaded {} agent(s): {:?}", names.len(), names);
+            p
+        }
+        Err(e) => {
+            tracing::error!("failed to load agents: {e}");
+            return Err(e.into());
+        }
+    };
+
+    let state = Arc::new(GatewayState::new(pool));
+    let app = handlers::router(state);
+
+    let app = if let Some(token) = auth_token {
+        let token = token.to_string();
+        tracing::info!("auth token configured");
+        app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let expected = token.clone();
+                async move {
+                    let auth = req
+                        .headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if auth != format!("Bearer {expected}") {
+                        let mut resp = axum::response::Response::new(axum::body::Body::from(
+                            r#"{"error":"unauthorized"}"#,
+                        ));
+                        *resp.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+                        return resp;
+                    }
+                    next.run(req).await
+                }
+            },
+        ))
+    } else {
+        app
+    };
+
+    let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], port));
+    tracing::info!("pan gateway listening on {addr}");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}

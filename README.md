@@ -11,16 +11,22 @@ format, and no tool-call convention.
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # Build everything
-cargo build --workspace
+cargo build --release
 
 # Run tests
 cargo test --workspace
 
 # Interactive agent
-cargo run -p pan-cli --bin pan-agent -- run examples/agents/echo.toml
+./target/release/pan run examples/agents/echo.toml
 
-# HTTP gateway
-cargo run -p pan-gateway --bin pan-gateway -- --agents-dir examples/agents
+# HTTP gateway (open http://localhost:40707)
+./target/release/pan gateway --agents-dir examples/agents
+
+# Terminal UI
+./target/release/pan tui examples/agents/echo.toml
+
+# Soul Protocol daemon
+./target/release/pan serve --port 40707
 ```
 
 ## Crates

@@ -1,14 +1,13 @@
-//! The `pan` binary.
+//! The `pan` binary — unified CLI for the Pan agent platform.
 //!
 //! Subcommands:
 //!
-//! - `pan serve [--port N]`  — run the Soul Protocol daemon on `127.0.0.1:N`.
-//!   The port can also be set via the `REACHLOCK_PAN_PORT` env var. If
-//!   neither is set, the daemon uses the canonical default 40707.
-//! - `pan check-conformance` — run the conformance suite against the bundled
-//!   fixtures and exit 0 on pass, 1 on fail. Intended for CI; the same
-//!   fixture set runs in `cargo test`'s `tests/conformance.rs`.
-//! - `pan --version` / `pan --help` — print the version / usage and exit.
+//! - `pan serve [--port N]`           — Soul Protocol daemon
+//! - `pan run <Agent.toml>`           — interactive CLI agent
+//! - `pan gateway [--port N] [--agents-dir DIR] [--auth-token T]` — HTTP server + web UI
+//! - `pan tui <Agent.toml>`           — terminal agent UI
+//! - `pan check-conformance`          — validate bundled protocol fixtures
+//! - `pan --version` / `pan --help`   — version / usage
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -35,9 +34,12 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "serve" => run_serve(&args[2..]).await,
+        "run" => run_agent(&args[2..]).await,
+        "gateway" => run_gateway_cmd(&args[2..]).await,
+        "tui" => run_tui_cmd(&args[2..]).await,
         "check-conformance" => run_check_conformance(),
         other => {
-            eprintln!("unknown subcommand: {other}");
+            eprintln!("pan: unknown subcommand `{other}`");
             print_usage();
             ExitCode::from(2)
         }
@@ -45,52 +47,45 @@ async fn main() -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("pan — the mind daemon (Soul Protocol server)");
+    eprintln!("pan — the Pan agent platform");
     eprintln!();
     eprintln!("USAGE:");
-    eprintln!("    pan serve [--port N]    Bind 127.0.0.1:N and run the daemon.");
-    eprintln!("                            N defaults to $REACHLOCK_PAN_PORT or 40707.");
-    eprintln!("    pan check-conformance   Run the conformance suite against bundled fixtures.");
-    eprintln!("    pan --version           Print the version and exit.");
-    eprintln!("    pan --help              Print this message.");
+    eprintln!("    pan serve [--port N]        Soul Protocol daemon");
+    eprintln!("    pan run <Agent.toml>         Interactive CLI agent");
+    eprintln!("    pan gateway [--port N]       HTTP server + web UI");
+    eprintln!("                [--agents-dir DIR]");
+    eprintln!("                [--auth-token T]");
+    eprintln!("    pan tui <Agent.toml>         Terminal agent UI");
+    eprintln!("    pan check-conformance        Validate protocol fixtures");
+    eprintln!("    pan --version / --help");
 }
+
+fn read_str<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
+    let val = args.get(*i)?;
+    *i += 1;
+    Some(val.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// serve
+// ---------------------------------------------------------------------------
 
 async fn run_serve(args: &[String]) -> ExitCode {
     let mut port: Option<u16> = None;
     let mut i = 0;
     while i < args.len() {
-        let a = &args[i];
-        if a == "--port" {
-            i += 1;
-            let v = match args.get(i) {
-                Some(s) => s,
-                None => {
-                    eprintln!("--port requires a value");
-                    return ExitCode::from(2);
-                }
-            };
-            port = Some(match v.parse::<u16>() {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("invalid --port: {e}");
-                    return ExitCode::from(2);
-                }
-            });
-        } else if let Some(rest) = a.strip_prefix("--port=") {
-            port = Some(match rest.parse::<u16>() {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("invalid --port: {e}");
-                    return ExitCode::from(2);
-                }
-            });
-        } else {
-            eprintln!("unknown argument: {a}");
-            return ExitCode::from(2);
+        match args.get(i).map(String::as_str) {
+            Some("--port") => {
+                i += 1;
+                port = read_str(args, &mut i).and_then(|s| s.parse().ok());
+            }
+            Some(_) => {
+                eprintln!("pan serve: unknown argument `{}`", args[i]);
+                return ExitCode::from(2);
+            }
+            None => break,
         }
-        i += 1;
     }
-    // Resolution order: --port, then $REACHLOCK_PAN_PORT, then DEFAULT_PORT.
     let port = port
         .or_else(|| {
             std::env::var("REACHLOCK_PAN_PORT")
@@ -98,17 +93,147 @@ async fn run_serve(args: &[String]) -> ExitCode {
                 .and_then(|s| s.parse().ok())
         })
         .unwrap_or(DEFAULT_PORT);
-
     eprintln!("pan serve: binding 127.0.0.1:{port}");
-    // The llm mind is lazily resolved by the session when it needs it.
-    // Pre-loading happens implicitly via the first perceive that targets
-    // an llm-minded soul.
     if let Err(e) = serve_loopback(port).await {
-        eprintln!("server error: {e}");
-        return ExitCode::from(1);
+        eprintln!("pan serve: {e}");
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+async fn run_agent(args: &[String]) -> ExitCode {
+    let path = match args.first() {
+        Some(p) => p,
+        None => {
+            eprintln!("pan run: missing <Agent.toml> path");
+            return ExitCode::from(2);
+        }
+    };
+    let manifest = match pan_agent::manifest::AgentManifest::load(path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("pan run: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let config_path = PathBuf::from(home).join(".pan").join("config.toml");
+    let global_config = pan_core::config::Config::load(&config_path).ok();
+    let agent = match pan_agent::assemble_with_config(
+        &manifest,
+        &pan_agent::builtin::builtin_registry(),
+        global_config.as_ref(),
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("pan run: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!(
+        "pan run: `{}` (persona {}, provider {}) — type a line, /quit to exit.",
+        agent.name,
+        agent.scope.origin,
+        agent.provider.id()
+    );
+    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    match pan_cli::run_session(&agent, stdin, &mut stdout).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("pan run: I/O error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// gateway
+// ---------------------------------------------------------------------------
+
+async fn run_gateway_cmd(args: &[String]) -> ExitCode {
+    let mut port: Option<u16> = None;
+    let mut agents_dir: Option<PathBuf> = None;
+    let mut auth_token: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--port") => {
+                i += 1;
+                port = read_str(args, &mut i).and_then(|s| s.parse().ok());
+            }
+            Some("--agents-dir") => {
+                i += 1;
+                agents_dir = read_str(args, &mut i).map(PathBuf::from);
+            }
+            Some("--auth-token") => {
+                i += 1;
+                auth_token = read_str(args, &mut i).map(String::from);
+            }
+            Some(_) => {
+                eprintln!("pan gateway: unknown argument `{}`", args[i]);
+                return ExitCode::from(2);
+            }
+            None => break,
+        }
+    }
+    let port = port
+        .or_else(|| {
+            std::env::var("PAN_GATEWAY_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(40707);
+    let agents_dir = agents_dir
+        .or_else(|| std::env::var("PAN_GATEWAY_AGENTS").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("./agents"));
+    if let Err(e) = pan_gateway::run_gateway(&agents_dir, port, auth_token.as_deref()).await {
+        eprintln!("pan gateway: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// tui
+// ---------------------------------------------------------------------------
+
+async fn run_tui_cmd(args: &[String]) -> ExitCode {
+    let path = match args.first() {
+        Some(p) => p,
+        None => {
+            eprintln!("pan tui: missing <Agent.toml> path");
+            return ExitCode::from(2);
+        }
+    };
+    let manifest = match pan_agent::manifest::AgentManifest::load(path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("pan tui: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut agent = match pan_agent::assemble(&manifest, &pan_agent::builtin::builtin_registry()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("pan tui: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = pan_tui::run_tui(&mut agent).await {
+        eprintln!("pan tui: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// check-conformance
+// ---------------------------------------------------------------------------
 
 fn run_check_conformance() -> ExitCode {
     let dir = fixtures_dir();
@@ -135,16 +260,9 @@ fn run_check_conformance() -> ExitCode {
     }
 }
 
-/// Locate the `tests/fixtures/` directory. The binary's CWD may vary; we
-/// walk up from the executable to find the workspace root by looking for
-/// `Cargo.toml` with our workspace marker.
 fn fixtures_dir() -> PathBuf {
-    // The fixtures are bundled at `pan-daemon/tests/fixtures/`. In dev /
-    // CI, that's at `target/debug/pan` + `/../../../pan-daemon/tests/fixtures`.
-    // We try a few likely candidates.
     let exe = std::env::current_exe().ok();
     if let Some(exe) = exe {
-        // Walk up to find a `Cargo.toml` declaring the workspace.
         let mut p = exe.as_path();
         loop {
             let candidate = p.join("pan-daemon/tests/fixtures");
@@ -157,7 +275,6 @@ fn fixtures_dir() -> PathBuf {
             }
         }
     }
-    // Fallback: try the workspace root relative to CWD.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     for ancestor in cwd.ancestors() {
         let candidate = ancestor.join("pan-daemon/tests/fixtures");
@@ -165,6 +282,5 @@ fn fixtures_dir() -> PathBuf {
             return candidate;
         }
     }
-    // Last resort: the `tests/fixtures` next to the binary.
     cwd.join("tests/fixtures")
 }

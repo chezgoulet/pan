@@ -61,9 +61,9 @@ cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
 
 # Run the interactive agent:
-cargo build -p pan-cli --bin pan-agent
+cargo build -p pan-daemon --bin pan
 printf 'run echo hi\nremember pet cat\nrecall pet\n/quit\n' \
-  | ./target/debug/pan-agent run <Agent.toml>
+  | ./target/debug/pan run <Agent.toml>
 ```
 
 A worked `Agent.toml` (command-driven, persistent memory):
@@ -135,10 +135,10 @@ Pipeline + Loop → governed capability runs.**
   `cargo metadata`), not `pan-core/target` (which is a stale standalone build).
   It treats rustc error-code drift as a WARNING (e.g. `handle_downcast` reports
   E0425 now, not the cited E0412) and only fails on a bypass that *compiles*.
-- **Three binaries now**: `pan` (pan-daemon, `pan serve`), `pan-agent` (pan-cli,
-  `pan-agent run`), and `pan-gateway` (pan-gateway, `pan-gateway serve`). Output
-  paths don't collide — each crate has a distinct binary name. The cross-repo CI
-  harness builds pan-daemon's `--bin pan`.
+- **Three binaries now**: `pan` (unified CLI: `pan serve`, `pan run`, `pan gateway`,
+  `pan tui`), plus `pan-daemon`'s `check-conformance` subcommand. All four former
+  entry points (`pan`, `pan-agent`, `pan-gateway`, `pan-tui`) consolidated into one
+  binary. The cross-repo CI harness builds `--bin pan` (pan-daemon).
 - **The daemon is now fully async**: tokio TcpListener, `tokio::spawn` per
   perceive, async read/write framing. The `block_on` bridge is gone from the
   server path; it remains only in the synchronous `on_perceive` fallback (used

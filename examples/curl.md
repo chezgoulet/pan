@@ -3,7 +3,7 @@
 Start the gateway:
 
 ```sh
-pan-gateway --agents-dir ./examples/agents --port 40707
+pan gateway --agents-dir ./examples/agents --port 40707
 ```
 
 ## Basic chat
@@ -70,7 +70,7 @@ curl -s http://127.0.0.1:40707/v1/agents/echo/delegate \
 ## With auth token
 
 ```sh
-pan-gateway --agents-dir ./examples/agents --port 40707 --auth-token my-secret
+pan gateway --agents-dir ./examples/agents --port 40707 --auth-token my-secret
 
 curl -s http://127.0.0.1:40707/v1/health \
   -H 'Authorization: Bearer my-secret' | jq

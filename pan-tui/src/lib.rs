@@ -1,53 +1,39 @@
-//! # pan-tui — Terminal UI for Pan agents.
+//! # pan-tui — Terminal UI for Pan agents (ratatui).
 //!
-//! A ratatui terminal app that reads an `Agent.toml`, assembles the agent, and
-//! presents a scrollable chat interface with streaming token display.
-//!
-//! ```sh
-//! pan-tui run <Agent.toml>
-//! ```
+//! Exported as a library so the unified `pan` binary can call it.
 
 use std::io;
-use std::path::PathBuf;
 
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::{Frame, Terminal};
 
-use pan_agent::builtin::builtin_registry;
-use pan_agent::manifest::AgentManifest;
+use pan_agent::AssembledAgent;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).map(PathBuf::from).unwrap_or_else(|| {
-        eprintln!("Usage: pan-tui <Agent.toml>");
-        std::process::exit(1);
-    });
-
-    let manifest = AgentManifest::load(&path)?;
-    let agent = pan_agent::assemble(&manifest, &builtin_registry())?;
-
-    let rt = tokio::runtime::Runtime::new()?;
+/// Run the TUI for a given assembled agent.
+pub async fn run_tui(agent: &mut AssembledAgent) -> Result<(), Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new(agent);
-    rt.block_on(app.run())
+    app.run(&mut terminal).await?;
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+    Ok(())
 }
 
-struct App {
-    agent: pan_agent::AssembledAgent,
-    messages: Vec<(String, String)>, // (role, content)
+struct App<'a> {
+    agent: &'a AssembledAgent,
+    messages: Vec<(String, String)>,
     input: String,
     scroll: u16,
 }
 
-impl App {
-    fn new(agent: pan_agent::AssembledAgent) -> Self {
+impl<'a> App<'a> {
+    fn new(agent: &'a AssembledAgent) -> Self {
         Self {
             agent,
             messages: Vec::new(),
@@ -56,11 +42,10 @@ impl App {
         }
     }
 
-    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        enable_raw_mode()?;
-        io::stdout().execute(EnterAlternateScreen)?;
-        let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
-
+    async fn run(
+        &mut self,
+        terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             terminal.draw(|f| self.ui(f))?;
 
@@ -128,25 +113,29 @@ impl App {
                 }
             }
         }
-
-        disable_raw_mode()?;
-        io::stdout().execute(LeaveAlternateScreen)?;
         Ok(())
     }
 
-    fn ui(&self, f: &mut Frame) {
+    fn ui(&self, f: &mut ratatui::Frame) {
         let area = f.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Min(1),
+                ratatui::layout::Constraint::Length(3),
+            ])
             .split(area);
+
+        use ratatui::style::{Color, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, Borders, Paragraph};
 
         let msg_text: Vec<Line> = self
             .messages
             .iter()
             .map(|(role, content)| {
-                let prefix = if role == "user" { "> " } else { "" };
-                let style = if role == "user" {
+                let prefix = if *role == "user" { "> " } else { "" };
+                let style = if *role == "user" {
                     Style::default().fg(Color::Cyan)
                 } else {
                     Style::default().fg(Color::Green)

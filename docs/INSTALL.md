@@ -7,18 +7,20 @@ git clone <repo-url>
 cd pan
 cargo build --release
 
-# The binaries are at:
-#   target/release/pan          (daemon)
-#   target/release/pan-agent    (CLI)
-#   target/release/pan-gateway  (HTTP gateway)
+# The unified binary:
+#   target/release/pan
+
+# Subcommands:
+#   pan serve --port 40707       Soul Protocol daemon
+#   pan run <Agent.toml>         Interactive agent
+#   pan gateway --agents-dir DIR HTTP server + web UI
+#   pan tui <Agent.toml>         Terminal agent UI
 ```
 
 ## Using `cargo install`
 
 ```sh
 cargo install --path pan-daemon --bin pan
-cargo install --path pan-cli --bin pan-agent
-cargo install --path pan-gateway --bin pan-gateway
 ```
 
 ## Requirements
@@ -32,6 +34,5 @@ cargo install --path pan-gateway --bin pan-gateway
 
 ```sh
 pan --version
-pan-agent --version
-pan-gateway --version
+pan --help
 ```
