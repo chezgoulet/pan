@@ -45,8 +45,13 @@ impl AgentPool {
                 continue;
             }
             let name = manifest.meta.name.clone();
-            let agent = pan_agent::assemble_with_config(&manifest, &registry, global)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let agent = match pan_agent::assemble_with_config(&manifest, &registry, global) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("pan-gateway: skipping `{}`: {e}", path.display());
+                    continue;
+                }
+            };
             if agents.contains_key(&name) {
                 return Err(format!("duplicate agent name `{name}` in pool"));
             }
