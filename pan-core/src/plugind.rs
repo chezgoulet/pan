@@ -411,9 +411,16 @@ impl PluginManager {
         ));
 
         let lifecycle = Lifecycle::new();
-        // TODO(#62): instantiate wasmtime instances and register them here.
-        // For now, native-only plugins work; Wasm plugins are stubs.
-        // lifecycle.register(Box::new(wasm_plugin));
+        // TODO(#62): register plugins into the lifecycle so
+        // provision/validate/run/cleanup are driven through the standard
+        // phases.  The core challenge: discover_all returns
+        // `Arc<dyn Plugin + Send + Sync>` (for the atomically-swappable
+        // PluginSet), but Lifecycle::register takes `Box<dyn Plugin>`.
+        // Two paths: (a) relax the lifecycle to store Arc and use interior
+        // mutability for &mut-self lifecycle methods, or (b) return
+        // separate copies — cheap for NativePlugin, expensive for wasm.
+        // For now the lifecycle is empty (start/cleanup are no-ops); the
+        // PluginSet provides capability lookup for loaded plugins.
 
         Ok(PluginManager {
             set,
@@ -479,15 +486,21 @@ impl PluginManager {
 
     /// Health check: collect probe results from all active plugins.
     ///
-    /// Native plugins always report alive. Wasm plugins probe the instance.
+    /// Native and wasm plugins in the set report alive (they loaded and
+    /// instantiated successfully). A real wasmtime probe would call a
+    /// `plugin_health` export on the instance — blocked by the same
+    /// Arc/&mut-self constraint as TODO(#62): the PluginSet stores
+    /// `Arc<dyn Plugin>`, but calling `plugin.run()` (or a health export)
+    /// needs `&mut self`. Either relax the constraint (interior
+    /// mutability) or store a separate probe handle.
     pub fn health(&self) -> Vec<PluginHealth> {
         self.set
             .all()
             .iter()
-            .map(|p| PluginHealth {
-                id: p.id().to_string(),
-                alive: true, // TODO(#58): real health probe via wasmtime
-                error: None,
+            .map(|p| {
+                // Plugins that loaded into the set are alive by
+                // construction. A degraded plugin would not be in the set.
+                PluginHealth::alive(p.id().to_string())
             })
             .collect()
     }

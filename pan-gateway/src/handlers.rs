@@ -451,3 +451,297 @@ fn to_gateway_response(report: RunReport) -> GatewayResponse {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pan_core::loop_engine::{RunEnd, RunReport};
+    use pan_core::schema::{Outcome, Trigger};
+
+    // -----------------------------------------------------------------------
+    // messages_to_goal_and_context
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn single_user_message_becomes_goal() {
+        let messages = vec![Message {
+            role: "user".into(),
+            content: "Hello".into(),
+        }];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: None,
+        };
+        let (goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert_eq!(goal.objective, "Hello");
+        assert_eq!(
+            goal.trigger,
+            Trigger::Utterance {
+                from: "user".into(),
+                content: "Hello".into(),
+            }
+        );
+        assert!(ctx.fragments.is_empty(), "no history or instruction");
+    }
+
+    #[test]
+    fn system_message_becomes_persona_instruction() {
+        let messages = vec![
+            Message {
+                role: "system".into(),
+                content: "You are a helpful assistant.".into(),
+            },
+            Message {
+                role: "user".into(),
+                content: "Hi".into(),
+            },
+        ];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: None,
+        };
+        let (goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert_eq!(goal.objective, "Hi");
+        assert_eq!(
+            ctx.fragments[0].channel, "persona",
+            "system message becomes persona fragment"
+        );
+        assert_eq!(ctx.fragments[0].body, "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn conversation_history_is_injected_as_context_fragment() {
+        let messages = vec![
+            Message {
+                role: "system".into(),
+                content: "You are helpful.".into(),
+            },
+            Message {
+                role: "user".into(),
+                content: "What's the weather?".into(),
+            },
+            Message {
+                role: "assistant".into(),
+                content: "It's sunny.".into(),
+            },
+            Message {
+                role: "user".into(),
+                content: "Great!".into(),
+            },
+        ];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: None,
+        };
+        let (_goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        let history_frag = ctx
+            .fragments
+            .iter()
+            .find(|f| f.channel == "history")
+            .expect("history fragment should exist");
+        let history: Vec<Value> =
+            serde_json::from_str(&history_frag.body).expect("history is valid JSON");
+        assert_eq!(history.len(), 2, "prior user + assistant turns");
+        assert_eq!(history[0]["role"], "user");
+        assert_eq!(history[0]["content"], "What's the weather?");
+        assert_eq!(history[1]["role"], "assistant");
+        assert_eq!(history[1]["content"], "It's sunny.");
+    }
+
+    #[test]
+    fn request_instruction_used_when_no_system_message() {
+        let messages = vec![Message {
+            role: "user".into(),
+            content: "Hi".into(),
+        }];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: Some("Use this instruction.".into()),
+        };
+        let (_goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert_eq!(
+            ctx.fragments[0].body, "Use this instruction.",
+            "request instruction is used when there is no system message"
+        );
+    }
+
+    #[test]
+    fn system_message_overrides_request_instruction_when_present() {
+        let messages = vec![
+            Message {
+                role: "system".into(),
+                content: "Be ignored.".into(),
+            },
+            Message {
+                role: "user".into(),
+                content: "Hi".into(),
+            },
+        ];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: Some("Request instruction.".into()),
+        };
+        let (_goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert_eq!(
+            ctx.fragments[0].body, "Be ignored.",
+            "system message in messages array overrides request instruction"
+        );
+    }
+
+    #[test]
+    fn tool_messages_are_ignored() {
+        let messages = vec![
+            Message {
+                role: "user".into(),
+                content: "Check weather".into(),
+            },
+            Message {
+                role: "tool".into(),
+                content: "{\"temp\": 72}".into(),
+            },
+            Message {
+                role: "assistant".into(),
+                content: "72 degrees.".into(),
+            },
+        ];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: None,
+        };
+        let (goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert_eq!(goal.objective, "Check weather");
+        let history_frag = ctx.fragments.iter().find(|f| f.channel == "history");
+        assert!(
+            history_frag.is_some(),
+            "user+assistant history should survive"
+        );
+        let history: Vec<Value> = serde_json::from_str(&history_frag.unwrap().body).unwrap();
+        assert_eq!(
+            history.len(),
+            1,
+            "the tool message was skipped, leaving one entry"
+        );
+        assert_eq!(history[0]["role"], "user");
+        assert_eq!(history[0]["content"], "Check weather");
+    }
+
+    #[test]
+    fn no_history_when_only_one_user_message() {
+        let messages = vec![Message {
+            role: "user".into(),
+            content: "Only me.".into(),
+        }];
+        let req = ChatCompletionsRequest {
+            model: "echo".into(),
+            messages: vec![],
+            stream: false,
+            instruction: None,
+        };
+        let (_goal, ctx) = messages_to_goal_and_context(&messages, &req);
+        assert!(
+            ctx.fragments.iter().all(|f| f.channel != "history"),
+            "no history fragment for single message"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // to_gateway_response
+    // -----------------------------------------------------------------------
+
+    fn test_run_report(
+        expressed: Vec<String>,
+        results: Vec<(String, Value)>,
+        end: Option<RunEnd>,
+    ) -> RunReport {
+        RunReport {
+            effected: vec![],
+            failed: vec![],
+            expressed,
+            results,
+            end,
+        }
+    }
+
+    #[test]
+    fn achieved_outcome_maps_to_achieved() {
+        let report = test_run_report(
+            vec!["Hello!".into()],
+            vec![],
+            Some(RunEnd::Concluded(Outcome::Achieved)),
+        );
+        let resp = to_gateway_response(report);
+        assert_eq!(resp.end, "achieved");
+        assert_eq!(resp.expressed, vec!["Hello!"]);
+    }
+
+    #[test]
+    fn abandoned_outcome_maps_to_abandoned() {
+        for outcome in [Outcome::Abandoned, Outcome::Continue] {
+            let report = test_run_report(vec![], vec![], Some(RunEnd::Concluded(outcome)));
+            let resp = to_gateway_response(report);
+            assert_eq!(resp.end, "abandoned");
+        }
+    }
+
+    #[test]
+    fn step_limit_maps_to_step_limit() {
+        let report = test_run_report(vec![], vec![], Some(RunEnd::StepLimit));
+        let resp = to_gateway_response(report);
+        assert_eq!(resp.end, "step_limit");
+    }
+
+    #[test]
+    fn no_end_maps_to_unknown() {
+        let report = test_run_report(vec![], vec![], None);
+        let resp = to_gateway_response(report);
+        assert_eq!(resp.end, "unknown");
+    }
+
+    #[test]
+    fn results_are_carried_through() {
+        let report = test_run_report(
+            vec![],
+            vec![("cap.shell".into(), Value::String("output".into()))],
+            Some(RunEnd::Concluded(Outcome::Achieved)),
+        );
+        let resp = to_gateway_response(report);
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0], Value::String("output".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // report_to_sse_stream
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn sse_emits_token_events_then_done() {
+        use futures::StreamExt;
+
+        let report = test_run_report(
+            vec!["Hello.".into(), "How are you?".into()],
+            vec![],
+            Some(RunEnd::Concluded(Outcome::Achieved)),
+        );
+        let stream = report_to_sse_stream(report);
+        let events: Vec<_> = stream.collect().await;
+
+        // Two token events plus one done event.
+        assert_eq!(events.len(), 3, "expected 3 SSE events");
+        // All events are Ok (Infallible).
+        for e in &events {
+            assert!(e.is_ok(), "SSE event should be Ok");
+        }
+    }
+}

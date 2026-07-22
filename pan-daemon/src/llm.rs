@@ -5,12 +5,16 @@
 //! endpoints, prompts, models — stays private to this module; that is the
 //! whole point of the vocabulary (see pan-core `providers.rs`).
 //!
-//! v0 targets **local, plain-HTTP** OpenAI-compatible servers (Ollama,
-//! llama.cpp, LM Studio) with a deliberately tiny std-only HTTP/1.0 client:
-//! no TLS, no async, no new dependencies. HTTP/1.0 sidesteps chunked
-//! transfer-encoding, so the client is ~a page of honest code. Cloud BYOK
-//! (Anthropic/OpenAI over TLS) is a later, additive provider behind the same
-//! trait — it needs a TLS dependency this crate doesn't take lightly.
+//! Targets local plain-HTTP OpenAI-compatible servers (Ollama, llama.cpp, LM
+//! Studio) and Ollama-native `/api/chat`. The HTTP transport uses
+//! [`pan_llm::http::post_json`] for the main chat completion calls — this
+//! gives retries with exponential backoff, `Retry-After` support, and TLS
+//! for cloud endpoints — while lightweight `http_get` probes are kept in
+//! this module for startup discovery (model list, Ollama detection).
+//!
+//! This is a single-shot NPC brain (Express + Conclude in one step), not a
+//! tool-using ReAct agent. Game NPCs say one line per perceive; they don't
+//! browse the web.
 //!
 //! Config (environment):
 //! - `PAN_LLM_BASE`  — base URL (e.g. `http://127.0.0.1:11434` for Ollama).
@@ -22,9 +26,9 @@
 //! daemon simply doesn't advertise the `llm` mind and llm-minded souls fall
 //! back to a Continue-only decision. The game must always run without a model.
 //!
-//! Known limitation (v0): `decide` blocks the session loop for the duration
-//! of one completion. One slow soul delays the next perceive on the same
-//! connection. Per-soul worker threads are the M2.1 follow-up.
+//! Known limitation: `decide` is async (the trait is), but the body still
+//! blocks on TCP I/O from a tokio worker thread. A truly non-blocking client
+//! is a future refinement (Sprint 3 / E1).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -37,7 +41,6 @@ use pan_core::schema::{
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_COMPLETION_TOKENS: u32 = 200;
 
 /// Which dialect the endpoint speaks. Auto-detected at resolve time: servers
@@ -89,7 +92,7 @@ fn resolve_uncached() -> Option<LlmConfig> {
             }
         },
     };
-    let api = if http_request(&host, port, "GET", "/api/version", None, PROBE_TIMEOUT).is_ok() {
+    let api = if detect_ollama(&host, port) {
         ApiKind::OllamaNative
     } else {
         ApiKind::OpenAiCompat
@@ -120,10 +123,42 @@ fn parse_http_base(base: &str) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+/// HTTP/1.0 GET for lightweight probes (model list, Ollama detection).
+/// Uses `pan_llm::http` is used for actual chat completions (with retries
+/// and TLS); this is kept minimal since probes run once at startup.
+fn http_get(host: &str, port: u16, path: &str, timeout: Duration) -> Result<String, String> {
+    let mut stream = TcpStream::connect((host, port)).map_err(|e| format!("connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+
+    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("send: {e}"))?;
+
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .map_err(|e| format!("read: {e}"))?;
+
+    let (_head, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "malformed HTTP response".to_string())?;
+    Ok(body.to_string())
+}
+
 fn first_model(host: &str, port: u16) -> Option<String> {
-    let response = http_request(host, port, "GET", "/v1/models", None, PROBE_TIMEOUT).ok()?;
+    let response = http_get(host, port, "/v1/models", PROBE_TIMEOUT).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&response).ok()?;
     parsed["data"][0]["id"].as_str().map(|s| s.to_string())
+}
+
+fn detect_ollama(host: &str, port: u16) -> bool {
+    http_get(host, port, "/api/version", PROBE_TIMEOUT).is_ok()
 }
 
 /// Fire a small completion so the server loads the model before the first
@@ -255,8 +290,9 @@ fn user_turn(goal: &Goal) -> String {
     }
 }
 
-/// One chat completion, returning the assistant's raw text. Dialect
-/// differences (path, token-cap key, response shape) stay inside this fn.
+/// One chat completion, returning the assistant's raw text. Uses
+/// `pan_llm::http::post_json` for the transport — retries, backoff, and
+/// TLS support come free with that dependency.
 fn chat(
     config: &LlmConfig,
     messages: &serde_json::Value,
@@ -286,79 +322,13 @@ fn chat(
             }),
         ),
     };
-    let response = http_request(
-        &config.host,
-        config.port,
-        "POST",
-        path,
-        Some(&body.to_string()),
-        HTTP_TIMEOUT,
-    )?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("bad completion JSON: {e}"))?;
-    if let Some(err) = parsed.get("error") {
-        return Err(format!("server error: {err}"));
-    }
+    let base = format!("http://{}:{}", config.host, config.port);
+    let response = pan_llm::http::post_json(&base, path, None, &body, HTTP_TIMEOUT)?;
     let content = match config.api {
-        ApiKind::OllamaNative => parsed["message"]["content"].as_str(),
-        ApiKind::OpenAiCompat => parsed["choices"][0]["message"]["content"].as_str(),
+        ApiKind::OllamaNative => response["message"]["content"].as_str(),
+        ApiKind::OpenAiCompat => response["choices"][0]["message"]["content"].as_str(),
     };
     Ok(content.unwrap_or("").to_string())
-}
-
-// ---------------------------------------------------------------------------
-// The tiny HTTP/1.0 client
-// ---------------------------------------------------------------------------
-
-/// One HTTP/1.0 exchange. 1.0 means the server neither keeps the connection
-/// alive nor chunk-encodes: read to EOF, split head from body, done.
-fn http_request(
-    host: &str,
-    port: u16,
-    method: &str,
-    path: &str,
-    json_body: Option<&str>,
-    timeout: Duration,
-) -> Result<String, String> {
-    let mut stream = TcpStream::connect((host, port)).map_err(|e| format!("connect: {e}"))?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-
-    let body = json_body.unwrap_or("");
-    let request = format!(
-        "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("send: {e}"))?;
-
-    let mut raw = String::new();
-    stream
-        .take(MAX_RESPONSE_BYTES)
-        .read_to_string(&mut raw)
-        .map_err(|e| format!("read: {e}"))?;
-
-    let (head, response_body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "malformed HTTP response".to_string())?;
-    let status_line = head.lines().next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| format!("bad status line: {status_line:?}"))?;
-    if status != 200 {
-        return Err(format!(
-            "HTTP {status}: {}",
-            &response_body[..response_body.len().min(300)]
-        ));
-    }
-    Ok(response_body.to_string())
 }
 
 // ---------------------------------------------------------------------------
