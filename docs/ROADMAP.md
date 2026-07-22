@@ -61,19 +61,18 @@ before starting. The authoritative invariants are listed in §5.
 ### Landed: Sprint 4 — "Daemon Unification"  [effort: M] ✓
 ### Landed: Sprint 5 — "Honest Sandbox + Self-Improvement"  [effort: L] ✓
 ### Landed: Sprint 6 — "More Providers, More Channels"  [effort: M] ✓
-
-### Sprint 7 — "Wasm Plugins"  [effort: S]
-### Sprint 8 — "Context Assembler"  [effort: M]
-### Sprint 9 — "TUI (Terminal Agent)"  [effort: M]
-### Sprint 10 — "GUI (Web Frontend)"  [effort: S]
+### Landed: Sprint 7 — "Wasm Plugins"  [effort: S] ✓
+### Landed: Sprint 8 — "Context Assembler"  [effort: M] ✓
+### Landed: Sprint 9 — "TUI (Terminal Agent)"  [effort: M] ✓
+### Landed: Sprint 10 — "GUI (Web Frontend)"  [effort: S] ✓
 
 ### Deferred / Future
 
-- **Async HTTP client** — both `pan-llm::http` and the daemon's LLM use blocking
-  `TcpStream` inside `async fn`. A non-blocking HTTP client would let one slow
-  inference call not occupy a tokio worker thread.
 - **Memory retrieval assembler** — query `cap.state` via `MemoryQuery` handle and
   inject relevant facts on a `memory` channel. Builds on Sprint 8's assembler.
+- **LSP diagnostics** — language server diagnostics fed as agent feedback.
+- **Lifecycle hooks** — user-defined scripts at PreInvoke/PostInvoke/PreConclude.
+- **Managed policies** — non-overridable org-wide settings.
 - **Testing breadth** — wire JSON fuzzing, daemon load test, stream cancellation
   fuzzing. Strong where it counts (compile-fail, conformance, ReAct).
 
@@ -82,12 +81,7 @@ before starting. The authoritative invariants are listed in §5.
 ## 3. Dependency Graph
 
 ```
-All above the line is landed.
-
-Sprint 7  (Wasm plugins)           — independent
-Sprint 8  (Context Assembler)      — independent, additive
-Sprint 9  (TUI)                    — depends on Sprint 6B streaming (landed)
-Sprint 10 (GUI web frontend)       — depends on pan-gateway (landed)
+All sprints 1-10 are landed.
 ```
 
 All remaining items are additive with no core vocabulary or pipeline changes.

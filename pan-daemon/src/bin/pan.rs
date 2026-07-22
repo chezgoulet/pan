@@ -56,6 +56,7 @@ fn print_usage() {
     eprintln!("                [--agents-dir DIR]");
     eprintln!("                [--auth-token T]");
     eprintln!("    pan tui <Agent.toml>         Terminal agent UI");
+    eprintln!("    pan tui --code <Agent.toml>    Code agent UI (plan/build modes)");
     eprintln!("    pan check-conformance        Validate protocol fixtures");
     eprintln!("    pan --version / --help");
 }
@@ -217,14 +218,21 @@ async fn run_tui_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut agent = match pan_agent::assemble(&manifest, &pan_agent::builtin::builtin_registry()) {
+    let registry = pan_agent::builtin::builtin_registry();
+    let is_code = args.iter().any(|a| a == "--code");
+    let mut agent = match pan_agent::assemble(&manifest, &registry) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("pan tui: {e}");
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = pan_tui::run_tui(&mut agent).await {
+    let plan_governor = if is_code {
+        Some(pan_core::pipeline::ScopedGovernor::new())
+    } else {
+        None
+    };
+    if let Err(e) = pan_tui::run_tui(&mut agent, plan_governor).await {
         eprintln!("pan tui: {e}");
         return ExitCode::FAILURE;
     }
