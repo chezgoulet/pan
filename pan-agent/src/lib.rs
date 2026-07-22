@@ -27,6 +27,7 @@
 //! assert_eq!(agent.scope.origin, "persona.assistant");
 //! ```
 
+pub mod agent;
 pub mod assembler;
 pub mod builtin;
 pub mod command;
