@@ -7,8 +7,9 @@
 
 use std::process::ExitCode;
 
-use pan_agent::{assemble, builtin_registry, AgentManifest};
+use pan_agent::{assemble_with_config, builtin_registry, AgentManifest};
 use pan_cli::run_session;
+use pan_core::config::Config;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -45,7 +46,14 @@ async fn run(path: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let agent = match assemble(&manifest, &builtin_registry()) {
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let config_path = std::path::PathBuf::from(home)
+        .join(".pan")
+        .join("config.toml");
+    let global_config = Config::load(&config_path).ok();
+
+    let agent = match assemble_with_config(&manifest, &builtin_registry(), global_config.as_ref()) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("pan-agent: {e}");

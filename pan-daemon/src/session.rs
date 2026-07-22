@@ -34,14 +34,16 @@
 //! `seq` and `re` are tracked here so call sites don't have to.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use pan_core::pipeline::PipelineError;
+use pan_core::pipeline::{EchoExecutor, Executor, Governor, PipelineError};
 use pan_core::providers::rules::{Rule, RulesProvider};
 use pan_core::registry::CapabilityRegistry;
 use pan_core::schema::{
     self as v, ActionIntent, Capability, Context, Decision, Goal, Provider, Scope,
 };
 
+use crate::governor::ResolveGovernor;
 use crate::wire::{
     AckBody, Body, DecisionBody, Envelope, ErrorBody, HelloBody, InstantiateSoulBody, MessageType,
     MindKind, PerceiveBody, RegisterCapabilitiesBody, WelcomeBody, PROTOCOL_VERSION,
@@ -214,12 +216,33 @@ fn pipeline_err_message(e: &PipelineError) -> String {
     }
 }
 
+/// The daemon's pipeline components, built once per session and shared
+/// across perceive tasks. The governor is rebuilt when capabilities change
+/// (register_capabilities message); the executor is always EchoExecutor
+/// (the daemon decides and echoes — the host executes).
+#[derive(Clone)]
+pub struct SessionPipeline {
+    pub governor: Arc<dyn Governor>,
+    pub executor: &'static dyn Executor,
+}
+
+impl SessionPipeline {
+    /// Build a session pipeline from a capability registry snapshot.
+    pub fn new(registry: Arc<CapabilityRegistry>) -> Self {
+        SessionPipeline {
+            governor: Arc::new(ResolveGovernor { registry }),
+            executor: &EchoExecutor,
+        }
+    }
+}
+
 /// The session itself. The connection driver ([`crate::server`]) reads lines,
 /// hands them to `Session::handle`, and writes the returned envelopes back
 /// over the connection.
 pub struct Session {
     next_seq: u64,
     registry: CapabilityRegistry,
+    pipeline: SessionPipeline,
     souls: HashMap<String, SoulState>,
     /// Highest revision perceived per goal id — the supersession ledger.
     /// An in-flight decision whose revision is below the ledger at its
@@ -240,6 +263,7 @@ pub struct PerceiveJob {
     pub provider: Box<dyn Provider>,
     pub caps: Vec<Capability>,
     pub registry: CapabilityRegistry,
+    pub pipeline: SessionPipeline,
 }
 
 impl Session {
@@ -248,9 +272,12 @@ impl Session {
     /// `dispatch_decision` so the pipeline can emit — the session itself
     /// does not need to inspect events.
     pub fn new() -> Self {
+        let registry = CapabilityRegistry::new();
+        let pipeline = SessionPipeline::new(Arc::new(registry.clone()));
         Session {
             next_seq: 0,
-            registry: CapabilityRegistry::new(),
+            registry,
+            pipeline,
             souls: HashMap::new(),
             latest_revision: HashMap::new(),
         }
@@ -388,6 +415,7 @@ impl Session {
             }
         }
         self.registry = new_reg;
+        self.pipeline = SessionPipeline::new(Arc::new(self.registry.clone()));
         Ok(vec![self.out(Some(re), Body::Ack(AckBody::default()))])
     }
 
@@ -441,8 +469,12 @@ impl Session {
                     tokio::runtime::Runtime::new().expect("create tokio runtime for sync perceive");
                 let decision = rt.block_on(job.provider.decide(&job.goal, &job.context, &job.caps));
                 let scope = Scope::new(format!("soul.{}", job.soul_id));
-                let outcome =
-                    rt.block_on(dispatch_decision_async(&decision, &job.registry, &scope));
+                let outcome = rt.block_on(dispatch_decision_async(
+                    &decision,
+                    &job.registry,
+                    &scope,
+                    &job.pipeline,
+                ));
                 Ok(self.finish_perceive_with_outcome(&job, &outcome))
             }
         }
@@ -494,6 +526,7 @@ impl Session {
             provider,
             caps,
             registry: self.registry.clone(),
+            pipeline: self.pipeline.clone(),
         })
     }
 
@@ -556,20 +589,22 @@ impl Session {
 }
 
 /// Free async function: dispatch all intents in a decision through the
-/// pipeline under the given scope. This runs outside the session lock.
+/// pipeline under the given scope and pipeline components. This runs
+/// outside the session lock.
 pub async fn dispatch_decision_async(
     decision: &Decision,
     registry: &pan_core::registry::CapabilityRegistry,
     scope: &Scope,
+    pipeline: &SessionPipeline,
 ) -> DispatchOutcome {
     use pan_core::events::{DiscardSink, EventStream};
-    use pan_core::pipeline::{AllowAll, EchoExecutor, Pipeline};
+    use pan_core::pipeline::Pipeline as CorePipeline;
 
     let mut stream = EventStream::spawn(DiscardSink);
-    let pipeline = Pipeline {
+    let core_pipeline = CorePipeline {
         registry,
-        governor: &AllowAll,
-        executor: &EchoExecutor,
+        governor: pipeline.governor.as_ref(),
+        executor: pipeline.executor,
         events: &stream,
     };
     let mut out = Vec::new();
@@ -586,7 +621,7 @@ pub async fn dispatch_decision_async(
                     correlation: correlation.clone(),
                     scope: scope.clone(),
                 };
-                if let Err(e) = pipeline.dispatch(req).await {
+                if let Err(e) = core_pipeline.dispatch(req).await {
                     stream.shutdown();
                     return DispatchOutcome::Failed {
                         code: pipeline_err_to_wire(&e),
@@ -1004,7 +1039,7 @@ mod async_perceive_tests {
             .decide(&job1.goal, &job1.context, &job1.caps)
             .await;
         let scope1 = Scope::new("soul.test");
-        let outcome1 = dispatch_decision_async(&d1, &job1.registry, &scope1).await;
+        let outcome1 = dispatch_decision_async(&d1, &job1.registry, &scope1, &job1.pipeline).await;
         let outs = s.finish_perceive_with_outcome(&job1, &outcome1);
         assert_eq!(outs.len(), 1);
         match &outs[0].body {
@@ -1021,7 +1056,7 @@ mod async_perceive_tests {
             .decide(&job2.goal, &job2.context, &job2.caps)
             .await;
         let scope2 = Scope::new("soul.test");
-        let outcome2 = dispatch_decision_async(&d2, &job2.registry, &scope2).await;
+        let outcome2 = dispatch_decision_async(&d2, &job2.registry, &scope2, &job2.pipeline).await;
         let outs = s.finish_perceive_with_outcome(&job2, &outcome2);
         match &outs[0].body {
             Body::Decision(d) => {
@@ -1044,7 +1079,7 @@ mod async_perceive_tests {
             .decide(&job_a.goal, &job_a.context, &job_a.caps)
             .await;
         let scope = Scope::new("soul.test");
-        let outcome = dispatch_decision_async(&d, &job_a.registry, &scope).await;
+        let outcome = dispatch_decision_async(&d, &job_a.registry, &scope, &job_a.pipeline).await;
         let outs = s.finish_perceive_with_outcome(&job_a, &outcome);
         assert!(
             matches!(outs[0].body, Body::Decision(_)),

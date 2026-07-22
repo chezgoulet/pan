@@ -106,10 +106,13 @@ async fn main() {
     // Load global config for default plugin/agents paths.
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let config_path = PathBuf::from(home).join(".pan").join("config.toml");
-    let _global_config = Config::load(&config_path).ok();
+    let global_config = Config::load(&config_path).ok();
+    if global_config.is_some() {
+        tracing::info!("loaded global config from {config_path:?}");
+    }
 
     tracing::info!("loading agents from {:?}", args.agents_dir);
-    let pool = match AgentPool::load(&args.agents_dir) {
+    let pool = match AgentPool::load_with_config(&args.agents_dir, global_config.as_ref()) {
         Ok(p) => {
             let names: Vec<&str> = p.names().collect();
             tracing::info!("loaded {} agent(s): {:?}", names.len(), names);

@@ -6,6 +6,7 @@ use std::path::Path;
 use pan_agent::builtin::builtin_registry;
 use pan_agent::manifest::AgentManifest;
 use pan_agent::AssembledAgent;
+use pan_core::config::Config;
 
 /// A collection of assembled agents, loaded from `Agent.toml` files and keyed
 /// by `meta.name`.
@@ -20,6 +21,12 @@ impl AgentPool {
     /// Load all `Agent.toml` files from `dir`. Non-recursive: only the top-level
     /// `*.toml` files whose `meta.name` is non-empty become pool entries.
     pub fn load(dir: &Path) -> Result<Self, String> {
+        Self::load_with_config(dir, None)
+    }
+
+    /// Load with global config merging. Global settings from `~/.pan/config.toml`
+    /// serve as defaults that per-agent `Agent.toml` settings override.
+    pub fn load_with_config(dir: &Path, global: Option<&Config>) -> Result<Self, String> {
         let registry = builtin_registry();
         let mut agents = HashMap::new();
         let source_dir = Some(dir.to_path_buf());
@@ -38,7 +45,7 @@ impl AgentPool {
                 continue;
             }
             let name = manifest.meta.name.clone();
-            let agent = pan_agent::assemble(&manifest, &registry)
+            let agent = pan_agent::assemble_with_config(&manifest, &registry, global)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             if agents.contains_key(&name) {
                 return Err(format!("duplicate agent name `{name}` in pool"));

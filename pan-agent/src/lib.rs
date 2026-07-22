@@ -32,8 +32,9 @@ pub mod builtin;
 pub mod command;
 pub mod echo;
 pub mod manifest;
+pub mod merge;
 
-pub use assembler::{assemble, assemble_toml, AssembleError, AssembledAgent};
+pub use assembler::{assemble, assemble_toml, assemble_with_config, AssembleError, AssembledAgent};
 pub use builtin::builtin_registry;
 pub use command::CommandProvider;
 pub use echo::EchoProvider;

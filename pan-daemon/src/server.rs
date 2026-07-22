@@ -107,8 +107,13 @@ impl Server {
                             .decide(&job.goal, &job.context, &job.caps)
                             .await;
                         let scope = Scope::new(format!("soul.{}", job.soul_id));
-                        let outcome =
-                            dispatch_decision_async(&decision, &job.registry, &scope).await;
+                        let outcome = dispatch_decision_async(
+                            &decision,
+                            &job.registry,
+                            &scope,
+                            &job.pipeline,
+                        )
+                        .await;
                         let outs = {
                             let mut s = session2.lock().unwrap();
                             s.finish_perceive_with_outcome(&job, &outcome)

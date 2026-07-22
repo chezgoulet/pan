@@ -25,18 +25,21 @@
 //! insert a `gov.policy` between `validate` and `execute` without changing the
 //! wire.
 
+use std::sync::Arc;
+
 use pan_core::pipeline::{Governor, Verdict};
 use pan_core::registry::CapabilityRegistry;
 use pan_core::schema::{Scope, Value};
 
-/// The daemon's M1 governor. Allow iff the host registered this capability.
-/// Holds a read-only reference to the per-soul capability registry.
-pub struct ResolveGovernor<'a> {
-    pub registry: &'a CapabilityRegistry,
+/// The daemon's governor. Allow iff the host registered this capability.
+/// Owns its registry via `Arc` so it can be shared across spawned tasks
+/// without lifetime conflicts.
+pub struct ResolveGovernor {
+    pub registry: Arc<CapabilityRegistry>,
 }
 
 #[async_trait::async_trait]
-impl<'a> Governor for ResolveGovernor<'a> {
+impl Governor for ResolveGovernor {
     fn id(&self) -> &str {
         "gov.daemon.resolve"
     }
@@ -61,6 +64,7 @@ impl<'a> Governor for ResolveGovernor<'a> {
 mod tests {
     use super::*;
     use pan_core::schema::Capability;
+    use std::sync::Arc;
 
     fn reg_with(caps: &[&str]) -> CapabilityRegistry {
         let mut r = CapabilityRegistry::new();
@@ -77,8 +81,8 @@ mod tests {
 
     #[tokio::test]
     async fn registered_capability_is_allowed() {
-        let r = reg_with(&["npc.move_to"]);
-        let g = ResolveGovernor { registry: &r };
+        let r = Arc::new(reg_with(&["npc.move_to"]));
+        let g = ResolveGovernor { registry: r };
         assert!(matches!(
             g.govern(&Scope::system(), "npc.move_to", &Value::Null)
                 .await,
@@ -88,8 +92,8 @@ mod tests {
 
     #[tokio::test]
     async fn unregistered_capability_is_denied_with_explicit_reason() {
-        let r = reg_with(&["npc.move_to"]);
-        let g = ResolveGovernor { registry: &r };
+        let r = Arc::new(reg_with(&["npc.move_to"]));
+        let g = ResolveGovernor { registry: r };
         let v = g
             .govern(&Scope::system(), "npc.fly_ship", &Value::Null)
             .await;

@@ -8,6 +8,7 @@
 //! provider whose settings are bad, is a load-time error, not a late surprise.
 
 use pan_core::components::{ComponentConfig, ComponentError, ComponentRegistry};
+use pan_core::config::Config;
 use pan_core::pipeline::ScopedGovernor;
 use pan_core::registry::ConflictError;
 use pan_core::schema::{Provider, Scope, Value};
@@ -77,6 +78,48 @@ pub fn assemble(
             .map(toml_to_json)
             .unwrap_or(Value::Null);
         let cfg = ComponentConfig::new(id.clone(), cap_settings);
+        let component = registry
+            .build_capability_provider(&cfg)
+            .map_err(AssembleError::Capability)?;
+        toolbox
+            .add(component)
+            .map_err(AssembleError::CapabilityConflict)?;
+    }
+
+    Ok(AssembledAgent {
+        name: manifest.meta.name.clone(),
+        instruction: manifest.persona.instruction.clone(),
+        scope: Scope::new(origin),
+        governor,
+        provider,
+        toolbox,
+    })
+}
+
+/// Assemble an agent with global config merging. Global settings from
+/// `~/.pan/config.toml` serve as defaults that per-agent settings override.
+/// Pass `None` for `global` when no global config is available (same
+/// behavior as [`assemble`]).
+pub fn assemble_with_config(
+    manifest: &AgentManifest,
+    registry: &ComponentRegistry,
+    global: Option<&Config>,
+) -> Result<AssembledAgent, AssembleError> {
+    let origin = manifest.origin();
+    let governor = ScopedGovernor::new().grant(origin.clone(), manifest.granted_prefixes());
+
+    // Provider with merged global + per-agent settings.
+    let merged_provider = crate::merge::merge_provider_settings(global, manifest);
+    let cfg = ComponentConfig::new(manifest.persona.provider.clone(), merged_provider);
+    let provider = registry
+        .build_provider(&cfg)
+        .map_err(AssembleError::Provider)?;
+
+    // Toolbox with merged global + per-agent settings per capability.
+    let mut toolbox = Toolbox::new();
+    for id in &manifest.caps.enable {
+        let merged_cap = crate::merge::merge_cap_settings(global, manifest, id);
+        let cfg = ComponentConfig::new(id.clone(), merged_cap);
         let component = registry
             .build_capability_provider(&cfg)
             .map_err(AssembleError::Capability)?;
