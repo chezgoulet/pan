@@ -17,6 +17,8 @@ async-trait = { workspace = true }
 # root set so we need no system cert store.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
+tokio = { workspace = true, features = ["net", "time"] }
+tokio-rustls = "0.26"
 
 [dev-dependencies]
 tokio = { workspace = true }

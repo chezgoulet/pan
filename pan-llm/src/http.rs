@@ -21,6 +21,10 @@ use std::time::Duration;
 
 use pan_core::schema::Value;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream as AsyncTcpStream;
+use tokio::time::{sleep, timeout as tokio_timeout};
+
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum retries on retryable HTTP statuses (429, 5xx).
@@ -306,6 +310,134 @@ fn parse_base(base: &str, path: &str) -> Result<Target, String> {
         port,
         full_path,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Async transport (tokio-based, non-blocking)
+// ---------------------------------------------------------------------------
+
+/// Async POST JSON. Same semantics as [`post_json`] but uses tokio I/O so it
+/// does not block a worker thread. Callers using it from `async fn` should
+/// `.await` it directly.
+pub async fn post_json_async(
+    base: &str,
+    path: &str,
+    api_key: Option<&str>,
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let headers: Vec<(String, String)> = match api_key {
+        Some(k) => vec![("Authorization".into(), format!("Bearer {k}"))],
+        None => vec![],
+    };
+    post_json_ex_async(base, path, body, &headers, timeout).await
+}
+
+/// Async POST with extra headers. See [`post_json_async`] and [`post_json_ex`].
+pub async fn post_json_ex_async(
+    base: &str,
+    path: &str,
+    body: &Value,
+    extra_headers: &[(String, String)],
+    timeout: Duration,
+) -> Result<Value, String> {
+    let target = parse_base(base, path)?;
+    let mut last_err: Option<(u16, String)> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = 500 * 2u64.pow(attempt - 1);
+            sleep(Duration::from_millis(delay_ms + rand_delay(delay_ms))).await;
+        }
+        let request = build_request_ex(&target.host, &target.full_path, body, &extra_headers.iter().map(|(k,v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
+        let raw = match target.scheme {
+            Scheme::Http => async_http_exchange(&target.host, target.port, timeout, request.as_bytes()).await?,
+            Scheme::Https => async_https_exchange(&target.host, target.port, timeout, request.as_bytes()).await?,
+        };
+        match parse_response(&raw) {
+            Ok(val) => return Ok(val),
+            Err((status, msg)) if status >= 429 => {
+                let msg_clone = msg.clone();
+                last_err = Some((status, msg));
+                if let Some(ms) = parse_retry_after(&raw) {
+                    sleep(Duration::from_millis(ms)).await;
+                }
+                if status == 429 || status >= 500 {
+                    continue;
+                }
+                return Err(format!("HTTP {status}: {msg_clone}"));
+            }
+            Err((_, msg)) => return Err(msg),
+        }
+    }
+    match last_err {
+        Some((status, msg)) => Err(format!("HTTP {status} after {MAX_RETRIES} retries: {msg}")),
+        None => Err("max retries exceeded".into()),
+    }
+}
+
+async fn async_connect(host: &str, port: u16, timeout: Duration) -> Result<AsyncTcpStream, String> {
+    tokio_timeout(timeout, AsyncTcpStream::connect((host, port)))
+        .await
+        .map_err(|_| "connect timeout".to_string())?
+        .map_err(|e| format!("connect: {e}"))
+}
+
+async fn async_read_body(stream: &mut (impl AsyncReadExt + Unpin), timeout: Duration) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match tokio_timeout(timeout, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => n,
+            Ok(Err(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read timeout".to_string()),
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > MAX_RESPONSE_BYTES {
+            break;
+        }
+    }
+    Ok(buf)
+}
+
+async fn async_http_exchange(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    request: &[u8],
+) -> Result<String, String> {
+    let mut stream = async_connect(host, port, timeout).await?;
+    stream
+        .write_all(request)
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+    let bytes = async_read_body(&mut stream, timeout).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn async_https_exchange(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    request: &[u8],
+) -> Result<String, String> {
+    use tokio_rustls::TlsConnector;
+
+    let config = tls_config()?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| format!("invalid TLS server name {host:?}"))?;
+    let connector = TlsConnector::from(config);
+    let tcp = async_connect(host, port, timeout).await?;
+    let mut tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| format!("tls handshake: {e}"))?;
+    tls.write_all(request)
+        .await
+        .map_err(|e| format!("tls send: {e}"))?;
+    let bytes = async_read_body(&mut tls, timeout).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]

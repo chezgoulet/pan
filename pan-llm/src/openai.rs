@@ -86,17 +86,17 @@ impl Provider for OpenAiProvider {
             request["tool_choice"] = Value::String("auto".into());
         }
 
-        // Blocking HTTP inside an async fn, on purpose: the loop's abandon-path
-        // gives cancellation at the *future* level (a superseded goal drops this
-        // whole future), matching `pan-daemon`'s llm client. A non-blocking client
-        // is a later refinement.
-        match http::post_json(
+        // Non-blocking async HTTP (tokio TcpStream + tokio-rustls for TLS).
+        // The loop's abandon-path gives cancellation at the future level.
+        match http::post_json_async(
             &self.base,
             "/chat/completions",
             self.api_key.as_deref(),
             &request,
             HTTP_TIMEOUT,
-        ) {
+        )
+        .await
+        {
             Ok(response) => {
                 // Track token usage from the API response.
                 if let Some(usage) = response.get("usage") {

@@ -312,65 +312,79 @@ impl Plugin for NativePlugin {
 // ---------------------------------------------------------------------------
 
 mod plugin_set {
-    use crate::registry::Plugin;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
-    /// A snapshot of all active plugins. Atomically swappable via
-    /// [`PluginManager::reload`](super::PluginManager).
-    ///
-    /// The pipeline holds an `Arc<PluginSet>` at any point; the manager writes
-    /// a new version on reload.
+    /// A lightweight entry describing one loaded plugin — used by
+    /// [`PluginSet`] for lookups while the actual [`Plugin`] trait
+    /// objects live in the [`Lifecycle`](crate::registry::Lifecycle).
+    #[derive(Debug, Clone)]
+    pub struct PluginEntry {
+        pub id: String,
+    }
+
+    impl PluginEntry {
+        pub fn id(&self) -> &str {
+            &self.id
+        }
+    }
+
+    /// A snapshot of all active plugins, storing only metadata.
+    /// The actual [`Plugin`](crate::registry::Plugin) trait objects
+    /// are owned by the `Lifecycle` for lifecycle management; the
+    /// `PluginSet` provides fast capability → plugin lookup for the
+    /// pipeline. Atomically swappable via [`PluginManager::reload`].
     pub struct PluginSet {
-        plugins: Vec<Arc<dyn Plugin + Send + Sync>>,
+        entries: Vec<PluginEntry>,
         by_id: HashMap<String, usize>,
-        // Capability index: maps capability id → plugin id
+        /// Maps capability id → plugin id.
         capability_index: HashMap<String, String>,
     }
 
     impl PluginSet {
         pub(crate) fn new(
-            plugins: Vec<Arc<dyn Plugin + Send + Sync>>,
+            entries: Vec<PluginEntry>,
             capability_index: HashMap<String, String>,
         ) -> Self {
             let mut by_id = HashMap::new();
-            for (i, p) in plugins.iter().enumerate() {
-                by_id.insert(p.id().to_string(), i);
+            for (i, p) in entries.iter().enumerate() {
+                by_id.insert(p.id.clone(), i);
             }
             PluginSet {
-                plugins,
+                entries,
                 by_id,
                 capability_index,
             }
         }
 
-        /// Look up a plugin by its id.
-        pub fn lookup(&self, id: &str) -> Option<&(dyn Plugin + Send + Sync)> {
-            self.by_id
-                .get(id)
-                .and_then(|&i| self.plugins.get(i))
-                .map(|p| p.as_ref())
+        /// Check if a plugin with the given id exists.
+        pub fn contains(&self, id: &str) -> bool {
+            self.by_id.contains_key(id)
+        }
+
+        /// Look up a plugin's metadata by its id.
+        pub fn lookup(&self, id: &str) -> Option<&PluginEntry> {
+            self.by_id.get(id).and_then(|&i| self.entries.get(i))
         }
 
         /// Find which plugin provides a given capability.
-        pub fn provider_for(&self, capability: &str) -> Option<&(dyn Plugin + Send + Sync)> {
+        pub fn provider_for(&self, capability: &str) -> Option<&PluginEntry> {
             self.capability_index
                 .get(capability)
                 .and_then(|id| self.lookup(id))
         }
 
-        /// Iterate all plugins.
-        pub fn all(&self) -> &[Arc<dyn Plugin + Send + Sync>] {
-            &self.plugins
+        /// Iterate all plugin entries.
+        pub fn all(&self) -> &[PluginEntry] {
+            &self.entries
         }
 
         /// Number of plugins in the set.
         pub fn len(&self) -> usize {
-            self.plugins.len()
+            self.entries.len()
         }
 
         pub fn is_empty(&self) -> bool {
-            self.plugins.is_empty()
+            self.entries.is_empty()
         }
     }
 }
@@ -401,26 +415,21 @@ impl PluginManager {
     /// Does NOT start the plugins — call [`start`](Self::start) for that.
     pub fn new(plugin_dirs: Vec<PathBuf>) -> Result<Self, PlugindError> {
         let (plugins, capability_index) = discover_all(&plugin_dirs)?;
-        let plugin_arcs: Vec<Arc<dyn Plugin + Send + Sync>> = plugins
-            .into_iter()
-            .map(|p| -> Arc<dyn Plugin + Send + Sync> { p })
-            .collect();
-        let set = Arc::new(PluginSet::new(
-            plugin_arcs.clone(),
-            capability_index.clone(),
-        ));
 
-        let lifecycle = Lifecycle::new();
-        // TODO(#62): register plugins into the lifecycle so
-        // provision/validate/run/cleanup are driven through the standard
-        // phases.  The core challenge: discover_all returns
-        // `Arc<dyn Plugin + Send + Sync>` (for the atomically-swappable
-        // PluginSet), but Lifecycle::register takes `Box<dyn Plugin>`.
-        // Two paths: (a) relax the lifecycle to store Arc and use interior
-        // mutability for &mut-self lifecycle methods, or (b) return
-        // separate copies — cheap for NativePlugin, expensive for wasm.
-        // For now the lifecycle is empty (start/cleanup are no-ops); the
-        // PluginSet provides capability lookup for loaded plugins.
+        // Build lightweight PluginSet from plugin metadata (id + capabilities).
+        let mut entries = Vec::new();
+        for p in &plugins {
+            entries.push(plugin_set::PluginEntry {
+                id: p.id().to_string(),
+            });
+        }
+        let set = Arc::new(PluginSet::new(entries, capability_index.clone()));
+
+        // Register each plugin into the lifecycle for provision/validate/run.
+        let mut lifecycle = Lifecycle::new();
+        for plugin in plugins {
+            lifecycle.register(plugin);
+        }
 
         Ok(PluginManager {
             set,
@@ -460,13 +469,17 @@ impl PluginManager {
 
         // Phase 2: rebuild.
         let (plugins, capability_index) = discover_all(&self.plugin_dirs)?;
-        let plugin_arcs: Vec<Arc<dyn Plugin + Send + Sync>> = plugins
-            .into_iter()
-            .map(|p| -> Arc<dyn Plugin + Send + Sync> { p })
-            .collect();
-        let new_set = Arc::new(PluginSet::new(plugin_arcs, capability_index));
-
-        let new_lifecycle = Lifecycle::new();
+        let mut entries = Vec::new();
+        for p in &plugins {
+            entries.push(plugin_set::PluginEntry {
+                id: p.id().to_string(),
+            });
+        }
+        let new_set = Arc::new(PluginSet::new(entries, capability_index));
+        let mut new_lifecycle = Lifecycle::new();
+        for plugin in plugins {
+            new_lifecycle.register(plugin);
+        }
 
         // Phase 3: swap.
         self.set = new_set;
@@ -538,11 +551,11 @@ impl PluginHealth {
 // Discovery
 // ---------------------------------------------------------------------------
 
-/// Scan plugin directories, load manifests, build WasmPlugin stubs.
+/// Scan plugin directories, load manifests, build WasmPlugin instances.
 fn discover_all(
     dirs: &[PathBuf],
-) -> Result<(Vec<Arc<dyn Plugin + Send + Sync>>, HashMap<String, String>), PlugindError> {
-    let mut plugins: Vec<Arc<dyn Plugin + Send + Sync>> = Vec::new();
+) -> Result<(Vec<Box<dyn Plugin>>, HashMap<String, String>), PlugindError> {
+    let mut plugins: Vec<Box<dyn Plugin>> = Vec::new();
     let mut capability_index = HashMap::new();
 
     for dir in dirs {
@@ -592,7 +605,7 @@ fn discover_all(
                 }
 
                 let wasm_plugin = WasmPlugin::load(path, manifest)?;
-                plugins.push(Arc::new(wasm_plugin));
+                plugins.push(Box::new(wasm_plugin));
             }
         }
     }
@@ -805,7 +818,10 @@ version = "1.0"
         .unwrap();
 
         let (plugins, cap_index) = discover_all(&[dir]).unwrap();
-        let set = PluginSet::new(plugins.into_iter().collect(), cap_index);
+        let entries: Vec<plugin_set::PluginEntry> = plugins.iter().map(|p| plugin_set::PluginEntry {
+            id: p.id().to_string(),
+        }).collect();
+        let set = PluginSet::new(entries, cap_index);
 
         assert_eq!(set.len(), 2);
         assert!(set.lookup("p1").is_some());

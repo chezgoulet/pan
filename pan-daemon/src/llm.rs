@@ -165,11 +165,11 @@ fn detect_ollama(host: &str, port: u16) -> bool {
 /// real line of dialogue needs it. Fire-and-forget on a thread.
 pub fn warm_up(config: &LlmConfig) {
     let config = config.clone();
-    std::thread::spawn(move || {
+    tokio::task::spawn(async move {
         let messages =
             serde_json::json!([{"role": "user", "content": "Say the single word: ready"}]);
         let started = std::time::Instant::now();
-        match chat(&config, &messages, 2) {
+        match chat(&config, &messages, 2).await {
             Ok(_) => eprintln!("pan llm: warm-up ok ({} ms)", started.elapsed().as_millis()),
             Err(e) => eprintln!("pan llm: warm-up failed: {e}"),
         }
@@ -204,7 +204,7 @@ impl Provider for LlmProvider {
             {"role": "system", "content": system_prompt(goal, ctx)},
             {"role": "user", "content": user_turn(goal)},
         ]);
-        match chat(&self.config, &messages, MAX_COMPLETION_TOKENS) {
+        match chat(&self.config, &messages, MAX_COMPLETION_TOKENS).await {
             Ok(raw) => {
                 let line = clean_line(&raw);
                 if line.is_empty() {
@@ -291,9 +291,9 @@ fn user_turn(goal: &Goal) -> String {
 }
 
 /// One chat completion, returning the assistant's raw text. Uses
-/// `pan_llm::http::post_json` for the transport — retries, backoff, and
+/// `pan_llm::http::post_json_async` for the transport — retries, backoff, and
 /// TLS support come free with that dependency.
-fn chat(
+async fn chat(
     config: &LlmConfig,
     messages: &serde_json::Value,
     max_tokens: u32,
@@ -323,7 +323,7 @@ fn chat(
         ),
     };
     let base = format!("http://{}:{}", config.host, config.port);
-    let response = pan_llm::http::post_json(&base, path, None, &body, HTTP_TIMEOUT)?;
+    let response = pan_llm::http::post_json_async(&base, path, None, &body, HTTP_TIMEOUT).await?;
     let content = match config.api {
         ApiKind::OllamaNative => response["message"]["content"].as_str(),
         ApiKind::OpenAiCompat => response["choices"][0]["message"]["content"].as_str(),
