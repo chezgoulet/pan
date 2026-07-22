@@ -21,6 +21,7 @@
 //! // &toolbox           -> the pipeline's Executor.
 //! ```
 
+pub mod format;
 pub mod fs;
 pub mod http;
 pub mod shell;
@@ -28,6 +29,7 @@ pub mod skill;
 pub mod state;
 pub mod time;
 
+pub use format::FormatCaps;
 pub use fs::FsCaps;
 pub use http::HttpCaps;
 pub use shell::ShellCaps;
@@ -66,6 +68,7 @@ pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), Com
     registry.register_capability_provider("cap.shell", |_cfg| Ok(Box::new(ShellCaps::new())))?;
     registry.register_capability_provider("cap.http", |_cfg| Ok(Box::new(HttpCaps::new())))?;
     registry.register_capability_provider("cap.time", |_cfg| Ok(Box::new(TimeCaps::new())))?;
+    registry.register_capability_provider("cap.format", |_cfg| Ok(Box::new(FormatCaps::new())))?;
     registry.register_capability_provider("cap.skill", |cfg| {
         let root = cfg
             .settings
