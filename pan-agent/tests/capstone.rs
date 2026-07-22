@@ -80,6 +80,7 @@ root = "{root}"
         pipeline: &pipeline,
         events: &stream,
         scope: agent.scope.clone(),
+        token_tx: None,
     };
 
     // Drive one span with the goal the rule reacts to.

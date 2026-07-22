@@ -49,6 +49,7 @@ async fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         pipeline: &pipeline,
         events: &stream,
         scope: Scope::system(),
+        token_tx: None,
     };
     let mut obs = Once(Some(Goal {
         id: "demo".into(),

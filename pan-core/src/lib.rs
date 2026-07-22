@@ -129,6 +129,7 @@ mod tests {
             pipeline: &pipeline,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Once(Some(Goal {
             id: "run-1".into(),
@@ -242,6 +243,7 @@ mod tests {
                 pipeline: &pipeline,
                 events: &stream,
                 scope: Scope::system(),
+                token_tx: None,
             };
             let mut obs = Once(Some(Goal {
                 id: "g".into(),

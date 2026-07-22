@@ -76,6 +76,7 @@ async fn wave_0_exit() {
         pipeline: &pipeline,
         events: &stream,
         scope: Scope::system(),
+        token_tx: None,
     };
     let mut obs = Once(Some(Goal {
         id: "run-1".into(),

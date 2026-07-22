@@ -120,6 +120,11 @@ pub struct Loop<'a> {
     /// skill invoked mid-span narrows this further via its own
     /// [`ScopedInvoker`](crate::invoker::ScopedInvoker).
     pub scope: Scope,
+    /// Optional channel for streaming `Express` bodies as the loop enacts
+    /// them. When set, each `Express` body is sent here immediately instead
+    /// of only being accumulated in the final `RunReport`. This enables
+    /// per-token / per-intent SSE streaming in the gateway.
+    pub token_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl<'a> Loop<'a> {
@@ -297,6 +302,9 @@ impl<'a> Loop<'a> {
                     self.events
                         .emit(EventKind::Expressed { body: body.clone() });
                     report.expressed.push(body.clone());
+                    if let Some(tx) = &self.token_tx {
+                        let _ = tx.send(body.clone());
+                    }
                 }
                 ActionIntent::Conclude { outcome: o } => {
                     outcome = Some(*o);
@@ -424,6 +432,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -485,6 +494,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -531,6 +541,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -628,6 +639,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = SupersedeAfter {
             first: Some(goal("g", 0)),
@@ -732,6 +744,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -780,6 +793,7 @@ mod tests {
             pipeline: &pipe,
             events: &stream,
             scope: Scope::system(),
+            token_tx: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;

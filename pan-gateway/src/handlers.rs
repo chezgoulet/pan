@@ -18,6 +18,7 @@ use axum::{
 };
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use pan_agent::AssembledAgent;
 use pan_core::events::{EventStream, TracingSink};
@@ -200,13 +201,20 @@ async fn chat_completions(
     state.metrics.requests.fetch_add(1, Ordering::Relaxed);
 
     let (goal, ctx) = messages_to_goal_and_context(&req.messages, &req);
-    let report = run_agent(agent, goal, ctx, &state.metrics).await;
 
     if req.stream {
-        Ok(Sse::new(report_to_sse_stream(report))
+        let (tx, rx) = mpsc::unbounded_channel();
+        let state_arc = Arc::clone(&state);
+        let model = req.model.clone();
+        let handle = tokio::spawn(async move {
+            let agent = state_arc.pool.get(&model).expect("agent just looked up");
+            run_agent_streaming(agent, goal, ctx, &state_arc.metrics, tx).await
+        });
+        Ok(Sse::new(channel_to_sse(rx, handle))
             .keep_alive(KeepAlive::default())
             .into_response())
     } else {
+        let report = run_agent(agent, goal, ctx, &state.metrics).await;
         Ok(Json(to_gateway_response(report)).into_response())
     }
 }
@@ -247,13 +255,19 @@ async fn agent_goals(
         },
     };
 
-    let report = run_agent(agent, goal, Context::default(), &state.metrics).await;
-
     if req.stream {
-        Ok(Sse::new(report_to_sse_stream(report))
+        let (tx, rx) = mpsc::unbounded_channel();
+        let state_arc = Arc::clone(&state);
+        let name = name.clone();
+        let handle = tokio::spawn(async move {
+            let agent = state_arc.pool.get(&name).expect("agent just looked up");
+            run_agent_streaming(agent, goal, Context::default(), &state_arc.metrics, tx).await
+        });
+        Ok(Sse::new(channel_to_sse(rx, handle))
             .keep_alive(KeepAlive::default())
             .into_response())
     } else {
+        let report = run_agent(agent, goal, Context::default(), &state.metrics).await;
         Ok(Json(to_gateway_response(report)).into_response())
     }
 }
@@ -308,13 +322,17 @@ async fn agent_delegate(
         },
     };
 
-    let report = run_agent(&child, goal, Context::default(), &state.metrics).await;
-
     if req.stream {
-        Ok(Sse::new(report_to_sse_stream(report))
+        let (tx, rx) = mpsc::unbounded_channel();
+        let state_arc = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            run_agent_streaming(&child, goal, Context::default(), &state_arc.metrics, tx).await
+        });
+        Ok(Sse::new(channel_to_sse(rx, handle))
             .keep_alive(KeepAlive::default())
             .into_response())
     } else {
+        let report = run_agent(&child, goal, Context::default(), &state.metrics).await;
         Ok(Json(to_gateway_response(report)).into_response())
     }
 }
@@ -323,6 +341,80 @@ async fn agent_delegate(
 // Core: run one agent span
 // ---------------------------------------------------------------------------
 
+/// Run one agent span with per-intent streaming. Each `Express` body is sent
+/// through `token_tx` as the loop enacts it, enabling real-time SSE for the
+/// gateway. The function still returns a `RunReport` for the final `done` event.
+async fn run_agent_streaming(
+    agent: &AssembledAgent,
+    goal: Goal,
+    ctx: Context,
+    _metrics: &Metrics,
+    token_tx: mpsc::UnboundedSender<String>,
+) -> RunReport {
+    let registry = agent.toolbox.registry();
+    let mut stream = EventStream::spawn(TracingSink);
+    let pipeline = Pipeline {
+        registry: &registry,
+        governor: &agent.governor,
+        executor: &agent.toolbox,
+        events: &stream,
+    };
+    let lp = Loop {
+        provider: agent.provider.as_ref(),
+        pipeline: &pipeline,
+        events: &stream,
+        scope: agent.scope.clone(),
+        token_tx: Some(token_tx),
+    };
+    let mut obs = Once(Some(goal));
+    let report = lp.run_span(&mut obs, &ctx).await;
+    stream.shutdown();
+    report
+}
+
+/// Convert a token channel receiver + a join handle for the run into an SSE
+/// stream. Drains tokens from the channel as they arrive, then awaits the
+/// run handle for the final `done` event.
+fn channel_to_sse(
+    rx: mpsc::UnboundedReceiver<String>,
+    handle: tokio::task::JoinHandle<RunReport>,
+) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    // State: (receiver, Option<join_handle>, drained_flag)
+    // After draining the channel, we yield the done event from the handle.
+    let initial: Option<(
+        mpsc::UnboundedReceiver<String>,
+        Option<tokio::task::JoinHandle<RunReport>>,
+        bool,
+    )> = Some((rx, Some(handle), false));
+    futures::stream::unfold(initial, |state| async {
+        let (mut rx, mut maybe_handle, done_sent) = state?;
+        // Receive next token from the channel.
+        match rx.recv().await {
+            Some(token) => {
+                let payload = serde_json::json!({"type": "token", "content": token});
+                Some((
+                    Ok(Event::default().data(payload.to_string())),
+                    Some((rx, maybe_handle, done_sent)),
+                ))
+            }
+            None => {
+                // Channel exhausted — send done event if we haven't yet.
+                if done_sent {
+                    return None;
+                }
+                let report = match maybe_handle.take() {
+                    Some(h) => h.await.unwrap_or_default(),
+                    None => RunReport::default(),
+                };
+                let done = serde_json::json!(to_gateway_response(report));
+                let event = Event::default().event("done").data(done.to_string());
+                Some((Ok(event), None))
+            }
+        }
+    })
+}
+
+/// Run one agent span. Returns the accumulated [`RunReport`] synchronously.
 async fn run_agent(
     agent: &AssembledAgent,
     goal: Goal,
@@ -342,6 +434,7 @@ async fn run_agent(
         pipeline: &pipeline,
         events: &stream,
         scope: agent.scope.clone(),
+        token_tx: None,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -351,8 +444,9 @@ async fn run_agent(
 
 /// Convert a completed [`RunReport`] into a stream of SSE events.
 /// Each `Express` body becomes one `token` event; a final `done` event carries
-/// the full report as JSON. True per-token streaming (emit as the loop runs)
-/// requires a core-loop callback extension (ROADMAP Sprint 6B).
+/// the full report as JSON. This is the post-hoc path (all tokens emitted at
+/// once after the run completes).
+#[cfg(test)]
 fn report_to_sse_stream(
     report: RunReport,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {

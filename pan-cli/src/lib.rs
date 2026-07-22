@@ -48,6 +48,7 @@ where
         pipeline: &pipeline,
         events: &stream,
         scope: agent.scope.clone(),
+        token_tx: None,
     };
 
     let mut lines = reader.lines();

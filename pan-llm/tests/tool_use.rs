@@ -149,6 +149,7 @@ async fn the_model_calls_a_tool_sees_the_result_and_answers() {
         pipeline: &pipeline,
         events: &stream,
         scope: Scope::system(),
+        token_tx: None,
     };
 
     let goal = Goal {
