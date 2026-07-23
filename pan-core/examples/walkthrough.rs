@@ -43,6 +43,7 @@ async fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         governor: &AllowAll,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
     let lp = Loop {
         provider,

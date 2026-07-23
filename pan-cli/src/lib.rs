@@ -42,6 +42,7 @@ where
         governor: &agent.governor,
         executor: &agent.toolbox,
         events: &stream,
+        hooks: vec![],
     };
     let lp = Loop {
         provider: agent.provider.as_ref(),

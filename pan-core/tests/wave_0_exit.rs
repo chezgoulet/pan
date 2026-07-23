@@ -67,6 +67,7 @@ async fn wave_0_exit() {
         governor: &AllowAll,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
 
     // Drive one discrete span.

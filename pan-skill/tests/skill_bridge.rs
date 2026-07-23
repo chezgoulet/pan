@@ -75,6 +75,7 @@ pan.done({"echoed_cap": data["executed"], "got_path": data["args"]["path"]})
         governor: &gov,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
     let invoker = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
     let runner = SkillRunner::new(&dir).unwrap();
@@ -118,6 +119,7 @@ except pan.PanDenied as e:
         governor: &gov,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
     let invoker = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
     let runner = SkillRunner::new(&dir).unwrap();
@@ -152,6 +154,7 @@ pan.done({"echo": pan.input()})
         governor: &gov,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
     let invoker = PipelineInvoker::new(&pipe, Scope::new("skill.x"));
     let runner = SkillRunner::new(&dir).unwrap();
@@ -185,6 +188,7 @@ raise ValueError("boom in the skill")
         governor: &gov,
         executor: &EchoExecutor,
         events: &stream,
+        hooks: vec![],
     };
     let invoker = PipelineInvoker::new(&pipe, Scope::new("skill.x"));
     let runner = SkillRunner::new(&dir).unwrap();

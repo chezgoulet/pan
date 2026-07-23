@@ -634,6 +634,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let provider = ScriptedProvider {
             decision: Decision {
@@ -702,6 +703,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         // The provider always wants to fire the effect; the abandon-path must
         // prevent it on the superseded revision, then conclude on the new one.
@@ -756,6 +758,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let provider = ScriptedProvider {
             decision: Decision {
@@ -856,6 +859,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let completed = Arc::new(AtomicU64::new(0));
         let provider = SlowProvider {
@@ -979,6 +983,7 @@ mod tests {
             governor: &AllowAll,
             executor: &FixedExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let calls = Arc::new(AtomicU64::new(0));
         let provider = ReActProvider {
@@ -1036,6 +1041,7 @@ mod tests {
             governor: &AllowAll,
             executor: &FixedExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let provider = RunawayProvider;
         let lp = Loop {

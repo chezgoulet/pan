@@ -297,6 +297,7 @@ impl<'a> App<'a> {
             governor: gov,
             executor: &agent.toolbox,
             events: &event_stream,
+            hooks: vec![],
         };
         let (token_tx, mut token_rx) = mpsc::unbounded_channel();
         let lp = Loop {
@@ -496,6 +497,7 @@ Slash commands:
             governor: &allow_all,
             executor: &agent.toolbox,
             events: &event_stream,
+            hooks: vec![],
         };
         let req = EffectRequest {
             capability: capability.to_string(),

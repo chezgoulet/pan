@@ -124,6 +124,7 @@ impl CapabilityProvider for AgentCaps {
             governor: &child.governor,
             executor: &child.toolbox,
             events: &stream,
+            hooks: vec![],
         };
         let lp = Loop {
             provider: child.provider.as_ref(),

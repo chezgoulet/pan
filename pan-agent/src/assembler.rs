@@ -292,6 +292,7 @@ provider = "provider.does_not_exist"
             governor: &agent.governor,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
 
         let shell = pipe

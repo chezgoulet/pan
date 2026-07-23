@@ -123,6 +123,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
 
         // Drive one discrete span.
@@ -245,6 +246,7 @@ mod tests {
                 governor: &AllowAll,
                 executor: &EchoExecutor,
                 events: &stream,
+                hooks: vec![],
             };
             let lp = Loop {
                 provider: p.as_ref(),

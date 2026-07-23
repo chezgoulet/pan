@@ -131,6 +131,7 @@ async fn the_model_calls_a_tool_sees_the_result_and_answers() {
         governor: &AllowAll,
         executor: &ComputeExecutor,
         events: &stream,
+        hooks: vec![],
     };
 
     let provider = OpenAiProvider {

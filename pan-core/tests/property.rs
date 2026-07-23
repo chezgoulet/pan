@@ -87,6 +87,7 @@ proptest! {
                 governor: &AllowAll,
                 executor: &EchoExecutor,
                 events: &stream,
+            hooks: vec![],
             };
             let caps: Vec<String> = reg.all().into_iter().map(|c| c.id).collect();
             for cap in &caps {

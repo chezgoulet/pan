@@ -31,6 +31,82 @@ use crate::invoker::ScopedInvoker;
 use crate::registry::CapabilityRegistry;
 use crate::schema::{Scope, Value};
 
+// ---------------------------------------------------------------------------
+// Effect hooks — lifecycle hooks invoked before and after each effect execution.
+// ---------------------------------------------------------------------------
+
+/// A lifecycle hook for effect execution. Registered on the pipeline,
+/// called for every `Invoke` that passes governance.
+#[async_trait::async_trait]
+pub trait EffectHook: Send + Sync {
+    fn id(&self) -> &str;
+
+    /// Called before execution. Return `Err(reason)` to abort the effect
+    /// (the error is propagated as `PipelineError::Execution`).
+    async fn pre_invoke(
+        &self,
+        _scope: &Scope,
+        _capability: &str,
+        _args: &Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Called after execution, regardless of success or failure.
+    async fn post_invoke(
+        &self,
+        _scope: &Scope,
+        _capability: &str,
+        _args: &Value,
+        _result: &Result<Value, String>,
+    ) {
+    }
+}
+
+/// A logging hook that writes every effect to stderr.
+pub struct LoggingHook {
+    id: String,
+}
+
+impl LoggingHook {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+#[async_trait::async_trait]
+impl EffectHook for LoggingHook {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn pre_invoke(
+        &self,
+        scope: &Scope,
+        capability: &str,
+        args: &Value,
+    ) -> Result<(), String> {
+        eprintln!(
+            "[hook] {}/{} {capability} args={args}",
+            scope.origin, self.id
+        );
+        Ok(())
+    }
+
+    async fn post_invoke(
+        &self,
+        scope: &Scope,
+        capability: &str,
+        _args: &Value,
+        result: &Result<Value, String>,
+    ) {
+        match result {
+            Ok(v) => eprintln!("[hook] {}/{} {capability} ok={v}", scope.origin, self.id),
+            Err(e) => eprintln!("[hook] {}/{} {capability} err={e}", scope.origin, self.id),
+        }
+    }
+}
+
 /// A world-effecting request entering the pipeline: a resolved capability id, its
 /// args, and the [`Scope`] on whose authority it is made. Produced by the loop
 /// from an `ActionIntent::Invoke` (stamped with the persona's scope) or by a
@@ -151,6 +227,213 @@ impl Governor for ScopedGovernor {
                 reason: format!("origin `{}` has no capability grants", scope.origin),
             },
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Path-scoped rules — file-path-level governance for filesystem capabilities.
+// ---------------------------------------------------------------------------
+
+/// A rule that matches a capability prefix and a path glob.
+struct PathRule {
+    capability_prefix: String,
+    path_glob: String,
+    allowed: bool,
+}
+
+/// A governor that adds file-path-level rules for `cap.fs.*` capabilities.
+///
+/// Wraps an inner governor and checks path-based rules before delegating.
+/// Allows agents to limit filesystem access to specific directories or
+/// file patterns, independent of capability-id grants.
+pub struct PathGovernor {
+    inner: Box<dyn Governor>,
+    rules: Vec<PathRule>,
+}
+
+impl PathGovernor {
+    pub fn new(inner: Box<dyn Governor>) -> Self {
+        Self {
+            inner,
+            rules: Vec::new(),
+        }
+    }
+
+    /// Allow paths matching `glob` for any capability whose id starts with
+    /// `capability_prefix`. The glob is matched against the `path` arg.
+    pub fn allow_path(
+        mut self,
+        capability_prefix: impl Into<String>,
+        glob: impl Into<String>,
+    ) -> Self {
+        self.rules.push(PathRule {
+            capability_prefix: capability_prefix.into(),
+            path_glob: glob.into(),
+            allowed: true,
+        });
+        self
+    }
+
+    /// Deny paths matching `glob` for any capability whose id starts with
+    /// `capability_prefix`.
+    pub fn deny_path(
+        mut self,
+        capability_prefix: impl Into<String>,
+        glob: impl Into<String>,
+    ) -> Self {
+        self.rules.push(PathRule {
+            capability_prefix: capability_prefix.into(),
+            path_glob: glob.into(),
+            allowed: false,
+        });
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl Governor for PathGovernor {
+    fn id(&self) -> &str {
+        "gov.path"
+    }
+
+    async fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict {
+        // Extract `path` from args if present.
+        let path = args.get("path").and_then(|v| v.as_str());
+        if let Some(p) = path {
+            for rule in &self.rules {
+                if Self::prefix_matches(&rule.capability_prefix, capability)
+                    && glob_match_simple(&rule.path_glob, p)
+                {
+                    if rule.allowed {
+                        break;
+                    }
+                    return Verdict::Deny {
+                        reason: format!(
+                            "path `{p}` denied by rule `{}` for `{capability}`",
+                            rule.path_glob
+                        ),
+                    };
+                }
+            }
+        }
+        // Delegate to inner governor.
+        self.inner.govern(scope, capability, args).await
+    }
+}
+
+impl PathGovernor {
+    fn prefix_matches(prefix: &str, capability: &str) -> bool {
+        capability == prefix
+            || capability
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+}
+
+/// Simple glob match for path rules: supports `*` (any chars except `/`)
+/// and `**` (any chars including `/`).
+fn glob_match_simple(pattern: &str, path: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let pth: Vec<char> = path.chars().collect();
+    glob_match_rec(&pat, &pth, 0, 0)
+}
+
+fn glob_match_rec(pat: &[char], pth: &[char], pi: usize, si: usize) -> bool {
+    if pi == pat.len() {
+        return si == pth.len();
+    }
+    match pat[pi] {
+        '*' => {
+            if pi + 1 < pat.len() && pat[pi + 1] == '*' {
+                let next_pi = if pi + 2 < pat.len() && pat[pi + 2] == '/' {
+                    pi + 3
+                } else {
+                    pi + 2
+                };
+                for s in si..=pth.len() {
+                    if glob_match_rec(pat, pth, next_pi, s) {
+                        return true;
+                    }
+                }
+                false
+            } else {
+                for s in si..=pth.len() {
+                    if s < pth.len() && pth[s] == '/' {
+                        continue;
+                    }
+                    if glob_match_rec(pat, pth, pi + 1, s) {
+                        return true;
+                    }
+                    if s < pth.len() && pth[s] == '/' {
+                        break;
+                    }
+                }
+                false
+            }
+        }
+        '?' => {
+            if si < pth.len() && pth[si] != '/' {
+                glob_match_rec(pat, pth, pi + 1, si + 1)
+            } else {
+                false
+            }
+        }
+        c => {
+            if si < pth.len() && pth[si] == c {
+                glob_match_rec(pat, pth, pi + 1, si + 1)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy chain — compose multiple governors.
+// ---------------------------------------------------------------------------
+
+/// Chains multiple [`Governor`]s. The first non-`Allow` verdict wins (fail-fast).
+/// If all governors `Allow`, the chain allows. This composes e.g. a
+/// [`ScopedGovernor`] + [`PathGovernor`] + [`HostAllowlistGovernor`] into one.
+pub struct PolicyChain {
+    governors: Vec<Box<dyn Governor>>,
+}
+
+impl PolicyChain {
+    pub fn new() -> Self {
+        Self {
+            governors: Vec::new(),
+        }
+    }
+
+    /// Add a governor to the chain. Order matters: earlier governors have
+    /// first chance to deny.
+    pub fn push(mut self, governor: Box<dyn Governor>) -> Self {
+        self.governors.push(governor);
+        self
+    }
+}
+
+impl Default for PolicyChain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl Governor for PolicyChain {
+    fn id(&self) -> &str {
+        "gov.chain"
+    }
+
+    async fn govern(&self, scope: &Scope, capability: &str, args: &Value) -> Verdict {
+        for g in &self.governors {
+            let v = g.govern(scope, capability, args).await;
+            if !matches!(v, Verdict::Allow) {
+                return v;
+            }
+        }
+        Verdict::Allow
     }
 }
 
@@ -347,6 +630,9 @@ pub struct Pipeline<'a> {
     pub governor: &'a dyn Governor,
     pub executor: &'a dyn Executor,
     pub events: &'a EventStream,
+    /// Optional lifecycle hooks. Called before and after every effect execution.
+    /// A hook that returns `Err` from `pre_invoke` aborts the effect.
+    pub hooks: Vec<&'a dyn EffectHook>,
 }
 
 impl<'a> Pipeline<'a> {
@@ -416,16 +702,40 @@ impl<'a> Pipeline<'a> {
     /// it is impossible to call without a passing govern decision.
     pub async fn execute(&self, governed: Governed) -> Result<Effected, PipelineError> {
         let cap = governed.request.capability;
-        match self.executor.execute(&cap, &governed.request.args).await {
-            Ok(result) => {
+        // Pre-invoke hooks.
+        for hook in &self.hooks {
+            if let Err(reason) = hook
+                .pre_invoke(&governed.request.scope, &cap, &governed.request.args)
+                .await
+            {
+                return Err(PipelineError::Execution {
+                    capability: cap,
+                    reason,
+                });
+            }
+        }
+        let result = self.executor.execute(&cap, &governed.request.args).await;
+        // Post-invoke hooks.
+        let hook_result: Result<Value, String> = result.clone().map_err(|e| e.0);
+        for hook in &self.hooks {
+            hook.post_invoke(
+                &governed.request.scope,
+                &cap,
+                &governed.request.args,
+                &hook_result,
+            )
+            .await;
+        }
+        match result {
+            Ok(value) => {
                 self.record("execute", &cap, StageStatus::Ok);
                 self.events.emit(EventKind::Effected {
                     capability: cap.clone(),
-                    result: result.clone(),
+                    result: value.clone(),
                 });
                 Ok(Effected {
                     capability: cap,
-                    result,
+                    result: value,
                 })
             }
             Err(ExecError(reason)) => {
@@ -445,21 +755,44 @@ impl<'a> Pipeline<'a> {
         governed: Governed,
         invoker: &dyn ScopedInvoker,
     ) -> Result<Effected, PipelineError> {
-        let cap = governed.request.capability;
-        match self
+        let cap = governed.request.capability.clone();
+        // Pre-invoke hooks.
+        for hook in &self.hooks {
+            if let Err(reason) = hook
+                .pre_invoke(&governed.request.scope, &cap, &governed.request.args)
+                .await
+            {
+                return Err(PipelineError::Execution {
+                    capability: cap.clone(),
+                    reason,
+                });
+            }
+        }
+        let result = self
             .executor
             .execute_with_invoker(&cap, &governed.request.args, invoker)
-            .await
-        {
-            Ok(result) => {
+            .await;
+        let hook_result: Result<Value, String> = result.clone().map_err(|e| e.0);
+        // Post-invoke hooks.
+        for hook in &self.hooks {
+            hook.post_invoke(
+                &governed.request.scope,
+                &cap,
+                &governed.request.args,
+                &hook_result,
+            )
+            .await;
+        }
+        match result {
+            Ok(value) => {
                 self.record("execute", &cap, StageStatus::Ok);
                 self.events.emit(EventKind::Effected {
                     capability: cap.clone(),
-                    result: result.clone(),
+                    result: value.clone(),
                 });
                 Ok(Effected {
                     capability: cap,
-                    result,
+                    result: value,
                 })
             }
             Err(ExecError(reason)) => {
@@ -600,6 +933,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let out = p
             .dispatch(EffectRequest {
@@ -623,6 +957,7 @@ mod tests {
             governor: &DenyAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let err = p
             .dispatch(EffectRequest {
@@ -646,6 +981,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let err = p
             .dispatch(EffectRequest {
@@ -672,6 +1008,7 @@ mod tests {
             governor: &AllowAll,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let err = p
             .dispatch(EffectRequest {
@@ -809,6 +1146,7 @@ mod tests {
             governor: &gov,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
 
         let allowed = p

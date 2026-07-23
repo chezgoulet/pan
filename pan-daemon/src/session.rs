@@ -606,6 +606,7 @@ pub async fn dispatch_decision_async(
         governor: pipeline.governor.as_ref(),
         executor: pipeline.executor,
         events: &stream,
+        hooks: vec![],
     };
     let mut out = Vec::new();
     for intent in &decision.intents {

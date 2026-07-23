@@ -429,6 +429,7 @@ mod tests {
             governor: governor.as_ref(),
             executor: &crate::pipeline::EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let denied = pipe
             .dispatch(EffectRequest {

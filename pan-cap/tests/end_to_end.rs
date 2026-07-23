@@ -47,6 +47,7 @@ async fn scoped_fs_write_runs_when_granted_and_is_denied_otherwise() {
         governor: &gov,
         executor: &tb,
         events: &stream,
+        hooks: vec![],
     };
 
     // Granted origin: the write actually happens.
@@ -100,6 +101,7 @@ async fn granted_persona_still_cannot_escape_the_fs_root() {
         governor: &gov,
         executor: &tb,
         events: &stream,
+        hooks: vec![],
     };
 
     let escape = pipe
@@ -132,6 +134,7 @@ async fn a_provider_driving_the_loop_writes_a_real_file() {
         governor: &gov,
         executor: &tb,
         events: &stream,
+        hooks: vec![],
     };
 
     // A behavior tree that writes a file, then succeeds.

@@ -205,6 +205,7 @@ mod tests {
             governor: &gov,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
 
@@ -238,6 +239,7 @@ mod tests {
             governor: &gov,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.notetaker"));
 
@@ -262,6 +264,7 @@ mod tests {
             governor: &gov,
             executor: &EchoExecutor,
             events: &stream,
+            hooks: vec![],
         };
         let inv = PipelineInvoker::new(&pipe, Scope::new("skill.x"));
         let r = inv.invoke("cap.nope", &serde_json::json!({})).await;
