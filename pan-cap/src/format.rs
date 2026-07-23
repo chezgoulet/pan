@@ -14,6 +14,7 @@ use pan_core::pipeline::ExecError;
 use pan_core::schema::{Capability, Value};
 use pan_core::toolbox::CapabilityProvider;
 
+/// Formatter capability: runs language-specific formatters by file extension.
 pub struct FormatCaps;
 
 impl Default for FormatCaps {

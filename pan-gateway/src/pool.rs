@@ -94,7 +94,16 @@ impl AgentPool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use std::path::{Path, PathBuf};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let n = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("pan_gw_test_{label}_{}_{}", std::process::id(), n))
+    }
 
     fn write_agent_toml(dir: &Path, name: &str, content: &str) {
         fs::write(dir.join(format!("{name}.toml")), content).unwrap();
@@ -137,7 +146,7 @@ path = "memory.json"
 
     #[test]
     fn load_pool_rejects_duplicate_names() {
-        let dir = std::env::temp_dir().join(format!("pan_gw_test_dup_{}", std::process::id()));
+        let dir = temp_dir("dup");
         fs::create_dir_all(&dir).unwrap();
         write_agent_toml(&dir, "echo", &echo_toml("echo"));
         write_agent_toml(&dir, "echo2", &echo_toml("echo"));
@@ -152,7 +161,7 @@ path = "memory.json"
 
     #[test]
     fn load_pool_empty_directory_is_error() {
-        let dir = std::env::temp_dir().join(format!("pan_gw_test_empty_{}", std::process::id()));
+        let dir = temp_dir("empty");
         fs::create_dir_all(&dir).unwrap();
 
         match AgentPool::load(&dir) {
@@ -174,7 +183,7 @@ path = "memory.json"
 
     #[test]
     fn load_pool_skips_non_toml_files() {
-        let dir = std::env::temp_dir().join(format!("pan_gw_test_skip_{}", std::process::id()));
+        let dir = temp_dir("skip");
         fs::create_dir_all(&dir).unwrap();
         write_agent_toml(&dir, "echo", &echo_toml("echo"));
         fs::write(dir.join("readme.txt"), "not an agent").unwrap();

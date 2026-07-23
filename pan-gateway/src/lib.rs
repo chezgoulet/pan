@@ -78,7 +78,13 @@ pub async fn run_gateway(
                         .get("authorization")
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("");
-                    if auth != format!("Bearer {expected}") {
+                    let expected_bearer = format!("Bearer {expected}");
+                    if auth.len() != expected_bearer.len()
+                        || auth
+                            .bytes()
+                            .zip(expected_bearer.bytes())
+                            .any(|(a, b)| a != b)
+                    {
                         let mut resp = axum::response::Response::new(axum::body::Body::from(
                             r#"{"error":"unauthorized"}"#,
                         ));

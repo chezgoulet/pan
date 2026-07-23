@@ -109,7 +109,7 @@ pub enum RunEnd {
 }
 
 /// The accumulated record of one run span.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RunReport {
     /// Effects that fully passed the pipeline and executed.
     pub effected: Vec<String>,
@@ -592,14 +592,8 @@ mod tests {
     use crate::pipeline::{AllowAll, EchoExecutor, Pipeline};
     use crate::registry::CapabilityRegistry;
     use crate::schema::{Capability, Trigger, Value};
+    use crate::test_helpers::cap;
 
-    fn cap(id: &str) -> Capability {
-        Capability {
-            id: id.into(),
-            summary: "".into(),
-            args_schema: serde_json::json!({"type":"object"}),
-        }
-    }
     fn goal(id: &str, rev: u64) -> Goal {
         Goal {
             id: id.into(),

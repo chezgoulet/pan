@@ -49,7 +49,7 @@ impl Server {
             }
             if line_buf.len() > MAX_LINE_BYTES {
                 let out = {
-                    let mut s = session.lock().unwrap();
+                    let mut s = session.lock().expect("session lock poisoned");
                     Envelope::outgoing(
                         s.alloc_seq(),
                         None,
@@ -69,7 +69,7 @@ impl Server {
                     Ok(e) => e,
                     Err((code, message)) => {
                         let out = {
-                            let mut s = session.lock().unwrap();
+                            let mut s = session.lock().expect("session lock poisoned");
                             Envelope::outgoing(
                                 s.alloc_seq(),
                                 None,
@@ -86,7 +86,7 @@ impl Server {
 
             if env.ty == crate::wire::MessageType::Perceive {
                 let (err_replies, job) = {
-                    let mut s = session.lock().unwrap();
+                    let mut s = session.lock().expect("session lock poisoned");
                     match s.begin_perceive(env.seq, env.body) {
                         Err(replies) => (Some(replies), None),
                         Ok(j) => (None, Some(j)),
@@ -115,7 +115,7 @@ impl Server {
                         )
                         .await;
                         let outs = {
-                            let mut s = session2.lock().unwrap();
+                            let mut s = session2.lock().expect("session2 lock poisoned");
                             s.finish_perceive_with_outcome(&job, &outcome)
                         };
                         for out in outs {
@@ -127,7 +127,7 @@ impl Server {
             }
 
             let (responses, version_error) = {
-                let mut s = session.lock().unwrap();
+                let mut s = session.lock().expect("session lock poisoned");
                 match s.handle(env) {
                     Ok(responses) => (Some(responses), None),
                     Err(SessionError::VersionUnsupported { client, ours }) => {

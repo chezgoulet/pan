@@ -28,6 +28,32 @@ pub mod evaluator;
 pub mod http;
 pub mod openai;
 
+use pan_core::schema::{ActionIntent, Decision, Outcome, Trigger};
+
+// ---------------------------------------------------------------------------
+// Shared utilities for LLM providers.
+// ---------------------------------------------------------------------------
+
+/// Build a terminal abandoned decision, logging the reason.
+pub(crate) fn abandoned(prefix: &str, reason: &str) -> Decision {
+    eprintln!("{prefix}: decide failed: {reason}");
+    Decision {
+        intents: vec![ActionIntent::Conclude {
+            outcome: Outcome::Abandoned,
+        }],
+    }
+}
+
+/// Format a trigger as user-turn text for the LLM prompt.
+pub(crate) fn trigger_to_text(trigger: &Trigger) -> String {
+    match trigger {
+        Trigger::Utterance { from, content } => format!("{from}: {content}"),
+        Trigger::Event { topic, payload } => format!("(event: {topic} {payload})"),
+        Trigger::Tick { .. } => "(a quiet moment passes)".to_string(),
+        Trigger::Signal { name, value } => format!("(signal: {name} = {value})"),
+    }
+}
+
 pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
 
@@ -159,6 +185,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn missing_base_is_a_load_error() {
         // Clear any ambient env so the manifest-only path is what's under test.
         std::env::remove_var("PAN_LLM_BASE");

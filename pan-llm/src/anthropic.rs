@@ -38,7 +38,7 @@ impl Provider for AnthropicProvider {
     async fn decide(&self, goal: &Goal, ctx: &Context, caps: &[Capability]) -> Decision {
         if let Some(budget) = self.token_budget {
             if self.tokens_used.load(Ordering::Relaxed) >= budget {
-                return abandoned("token budget exhausted");
+                return crate::abandoned("provider.anthropic", "token budget exhausted");
             }
         }
         let (tools, name_to_id) = tool_schema(caps);
@@ -75,7 +75,7 @@ impl Provider for AnthropicProvider {
                 }
                 interpret(&response, &name_to_id)
             }
-            Err(e) => abandoned(&e),
+            Err(e) => crate::abandoned("provider.anthropic", &e),
         }
     }
 }
@@ -219,10 +219,10 @@ fn tool_schema(caps: &[Capability]) -> (Vec<Value>, HashMap<String, String>) {
 
 fn interpret(response: &Value, name_to_id: &HashMap<String, String>) -> Decision {
     if let Some(err) = response.get("error") {
-        return abandoned(&format!("server error: {err}"));
+        return crate::abandoned("provider.anthropic", &format!("server error: {err}"));
     }
     let Some(content) = response.get("content").and_then(|c| c.as_array()) else {
-        return abandoned("response missing content array");
+        return crate::abandoned("provider.anthropic", "response missing content array");
     };
 
     let mut express_text: Option<String> = None;
@@ -288,21 +288,7 @@ fn sanitize(capability_id: &str) -> String {
 }
 
 fn user_turn(trigger: &Trigger) -> String {
-    match trigger {
-        Trigger::Utterance { from, content } => format!("{from}: {content}"),
-        Trigger::Event { topic, payload } => format!("(event: {topic} {payload})"),
-        Trigger::Tick { .. } => "(a quiet moment passes)".to_string(),
-        Trigger::Signal { name, value } => format!("(signal: {name} = {value})"),
-    }
-}
-
-fn abandoned(reason: &str) -> Decision {
-    eprintln!("provider.anthropic: decide failed: {reason}");
-    Decision {
-        intents: vec![ActionIntent::Conclude {
-            outcome: Outcome::Abandoned,
-        }],
-    }
+    crate::trigger_to_text(trigger)
 }
 
 #[cfg(test)]

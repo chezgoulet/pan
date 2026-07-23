@@ -109,6 +109,8 @@ pub struct GoalRequest {
 }
 
 #[derive(Debug, Deserialize)]
+/// Serialized trigger info for gateway responses. Mirrors the core's `Trigger`
+/// but JSON-friendly.
 pub struct TriggerInfo {
     #[serde(default = "default_trigger_kind")]
     pub kind: String,
@@ -215,9 +217,14 @@ async fn chat_completions(
         let (tx, rx) = mpsc::unbounded_channel();
         let state_arc = Arc::clone(&state);
         let model = req.model.clone();
-        let handle = tokio::spawn(async move {
-            let agent = state_arc.pool.get(&model).expect("agent just looked up");
-            run_agent_streaming(agent, goal, ctx, &state_arc.metrics, tx).await
+        let handle: tokio::task::JoinHandle<RunReport> = tokio::spawn(async move {
+            match state_arc.pool.get(&model) {
+                Some(agent) => run_agent_streaming(agent, goal, ctx, &state_arc.metrics, tx).await,
+                None => {
+                    let _ = tx.send("error: agent not found".into());
+                    RunReport::default()
+                }
+            }
         });
         Ok(Sse::new(channel_to_sse(rx, handle))
             .keep_alive(KeepAlive::default())
@@ -268,9 +275,17 @@ async fn agent_goals(
         let (tx, rx) = mpsc::unbounded_channel();
         let state_arc = Arc::clone(&state);
         let name = name.clone();
-        let handle = tokio::spawn(async move {
-            let agent = state_arc.pool.get(&name).expect("agent just looked up");
-            run_agent_streaming(agent, goal, Context::default(), &state_arc.metrics, tx).await
+        let handle: tokio::task::JoinHandle<RunReport> = tokio::spawn(async move {
+            match state_arc.pool.get(&name) {
+                Some(agent) => {
+                    run_agent_streaming(agent, goal, Context::default(), &state_arc.metrics, tx)
+                        .await
+                }
+                None => {
+                    let _ = tx.send("error: agent not found".into());
+                    RunReport::default()
+                }
+            }
         });
         Ok(Sse::new(channel_to_sse(rx, handle))
             .keep_alive(KeepAlive::default())

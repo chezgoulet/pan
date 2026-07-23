@@ -116,7 +116,7 @@ impl HealthServer {
             None => return,
         };
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().expect("health state lock poisoned");
             s.set_started();
         }
         for conn in listener.incoming() {
@@ -141,7 +141,7 @@ fn handle_connection(
 
     let request = String::from_utf8_lossy(&buf[..n]);
     let (status_line, content_type, body) = if request.starts_with("GET /health ") {
-        let health = state.lock().unwrap().snapshot();
+        let health = state.lock().expect("health state lock poisoned").snapshot();
         let json = serde_json::to_string_pretty(&health)
             .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string());
         ("HTTP/1.1 200 OK\r\n", "application/json", json)

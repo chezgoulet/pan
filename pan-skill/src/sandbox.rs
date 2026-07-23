@@ -118,6 +118,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn bwrap_not_available_gracefully_degrades() {
         // Temporarily remove bwrap from PATH, if it's there.
         let old_path = std::env::var("PATH").ok();

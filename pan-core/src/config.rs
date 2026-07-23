@@ -199,6 +199,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn expand_simple_var() {
         std::env::set_var("PAN_TEST_VAL", "hello");
         let result = expand_env_vars("${PAN_TEST_VAR}");
@@ -208,6 +209,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn expand_braced_var() {
         std::env::set_var("PAN_TEST_HELLO", "world");
         let result = expand_env_vars("${PAN_TEST_HELLO}");

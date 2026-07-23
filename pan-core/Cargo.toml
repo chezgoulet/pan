@@ -20,6 +20,7 @@ wasmtime = { version = "46", features = ["wat"] }
 
 [dev-dependencies]
 proptest = "1"
+serial_test = "3"
 wat = "1"
 
 [[example]]

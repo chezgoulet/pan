@@ -68,7 +68,7 @@ impl Provider for OpenAiProvider {
         // Check token budget before making an API call.
         if let Some(budget) = self.token_budget {
             if self.tokens_used.load(Ordering::Relaxed) >= budget {
-                return abandoned("token budget exhausted");
+                return crate::abandoned("provider.llm", "token budget exhausted");
             }
         }
 
@@ -106,7 +106,7 @@ impl Provider for OpenAiProvider {
                 }
                 interpret(&response, &name_to_id)
             }
-            Err(e) => abandoned(&e),
+            Err(e) => crate::abandoned("provider.llm", &e),
         }
     }
 }
@@ -250,7 +250,7 @@ fn tool_schema(caps: &[Capability]) -> (Vec<Value>, HashMap<String, String>) {
 /// `Express` + `Conclude(Achieved)`.
 fn interpret(response: &Value, name_to_id: &HashMap<String, String>) -> Decision {
     if let Some(err) = response.get("error") {
-        return abandoned(&format!("server error: {err}"));
+        return crate::abandoned("provider.llm", &format!("server error: {err}"));
     }
     let message = &response["choices"][0]["message"];
     let content = message
@@ -311,21 +311,7 @@ fn sanitize(capability_id: &str) -> String {
 }
 
 fn user_turn(trigger: &Trigger) -> String {
-    match trigger {
-        Trigger::Utterance { from, content } => format!("{from}: {content}"),
-        Trigger::Event { topic, payload } => format!("(event: {topic} {payload})"),
-        Trigger::Tick { .. } => "(a quiet moment passes)".to_string(),
-        Trigger::Signal { name, value } => format!("(signal: {name} = {value})"),
-    }
-}
-
-fn abandoned(reason: &str) -> Decision {
-    eprintln!("provider.llm: decide failed: {reason}");
-    Decision {
-        intents: vec![ActionIntent::Conclude {
-            outcome: Outcome::Abandoned,
-        }],
-    }
+    crate::trigger_to_text(trigger)
 }
 
 #[cfg(test)]

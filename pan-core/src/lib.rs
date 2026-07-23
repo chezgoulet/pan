@@ -279,3 +279,18 @@ mod tests {
         }
     }
 }
+
+/// Test utilities available when building with `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use crate::schema::Capability;
+
+    /// Build a capability with a default `{"type":"object"}` schema.
+    pub fn cap(id: &str) -> Capability {
+        Capability {
+            id: id.into(),
+            summary: "".into(),
+            args_schema: serde_json::json!({"type":"object"}),
+        }
+    }
+}

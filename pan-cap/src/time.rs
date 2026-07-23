@@ -7,6 +7,7 @@ use pan_core::pipeline::ExecError;
 use pan_core::schema::{Capability, Value};
 use pan_core::toolbox::CapabilityProvider;
 
+/// Time capability: returns current date/time in ISO 8601.
 pub struct TimeCaps;
 
 impl Default for TimeCaps {

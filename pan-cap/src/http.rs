@@ -19,6 +19,7 @@ use pan_core::toolbox::CapabilityProvider;
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
+/// HTTP capability: governed GET/POST requests to external URLs.
 pub struct HttpCaps;
 
 impl Default for HttpCaps {

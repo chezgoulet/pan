@@ -459,6 +459,14 @@ pub trait Executor: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct ExecError(pub String);
 
+impl std::fmt::Display for ExecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ExecError {}
+
 /// A trivial in-process executor that echoes the args back as the result, so the
 /// pipeline runs end-to-end in Wave 0. Real executors (`exec.local`,
 /// `exec.docker`) arrive in Waves 1/4.
