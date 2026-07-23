@@ -35,6 +35,7 @@ pub mod context;
 pub mod echo;
 pub mod manifest;
 pub mod merge;
+pub mod session;
 
 pub use assembler::{assemble, assemble_toml, assemble_with_config, AssembleError, AssembledAgent};
 pub use builtin::builtin_registry;

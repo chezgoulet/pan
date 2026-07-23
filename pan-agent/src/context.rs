@@ -3,6 +3,8 @@ use std::sync::RwLock;
 use pan_core::loop_engine::RunReport;
 use pan_core::schema::{Context, ContextAssembler, Goal, Trigger, Value};
 
+use crate::session::SessionStore;
+
 /// Rolling conversation history assembler.
 ///
 /// Keeps the last N turns (user + assistant) in memory and injects them
@@ -77,6 +79,9 @@ pub fn register_assemblers(registry: &mut pan_core::components::ComponentRegistr
     registry
         .register_context_assembler("context.memory_retrieval", build_memory_retrieval)
         .expect("register context.memory_retrieval");
+    registry
+        .register_context_assembler("context.session", build_session)
+        .expect("register context.session");
 }
 
 /// Memory retrieval assembler: reads `cap.state`'s persisted JSON file and
@@ -140,4 +145,72 @@ fn build_memory_retrieval(
             reason: "context.memory_retrieval requires `state_path` setting (path to cap.state's JSON file)".into(),
         })?;
     Ok(Box::new(MemoryRetrievalAssembler::new(path)))
+}
+
+/// Session-persisted context assembler.
+///
+/// Like `RollingConversationHistory`, but turns survive restarts via a
+/// [`SessionStore`] backed by a JSONL file.
+///
+/// On `assemble()`: loads recent turns from the session file and injects
+/// them as a `history` channel fragment.
+///
+/// On `commit()`: appends the current turn to the session file.
+pub struct SessionContextAssembler {
+    store: SessionStore,
+}
+
+impl SessionContextAssembler {
+    pub fn new(store: SessionStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl ContextAssembler for SessionContextAssembler {
+    fn id(&self) -> &str {
+        "context.session"
+    }
+
+    async fn assemble(&self, _goal: &Goal) -> Context {
+        let turns = self.store.turns();
+        if turns.is_empty() {
+            return Context::default();
+        }
+        let history: Vec<Value> = turns
+            .iter()
+            .flat_map(|turn| {
+                let user = serde_json::json!({"role": "user", "content": turn.objective});
+                let assistant =
+                    serde_json::json!({"role": "assistant", "content": turn.expressed.join("\n")});
+                vec![user, assistant]
+            })
+            .collect();
+        let body = serde_json::to_string(&history).unwrap_or_default();
+        Context::default().with("history", body)
+    }
+
+    async fn commit(&self, goal: &Goal, report: &RunReport) {
+        self.store.append(goal, &report.expressed, &report.results);
+    }
+}
+
+fn build_session(
+    cfg: &pan_core::components::ComponentConfig,
+) -> Result<Box<dyn ContextAssembler>, pan_core::components::ComponentError> {
+    let path = cfg
+        .settings
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| pan_core::components::ComponentError::Construction {
+            id: cfg.id.clone(),
+            reason: "context.session requires a `path` setting (session file path)".into(),
+        })?;
+    let max_turns = cfg
+        .settings
+        .get("max_turns")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100) as usize;
+    let store = SessionStore::new(path).with_max_turns(max_turns);
+    Ok(Box::new(SessionContextAssembler::new(store)))
 }
