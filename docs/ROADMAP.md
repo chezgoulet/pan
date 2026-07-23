@@ -18,8 +18,8 @@ The doc has two views:
 
 ## 1. Current Baseline
 
-**Branch:** `testing` at `774cbe3` (2026-07-22)
-**Metrics:** 223 tests (all pass), 8 crates, 3 binaries, 4 compile-fail guards,
+**Branch:** `testing` at `2e43135` (2026-07-23)
+**Metrics:** 249 tests (all pass), 10 crates, 1 unified binary, 4 compile-fail guards,
 19 conformance tests covering 15 Soul Protocol fixtures (all green)
 **Gate:** `cargo fmt --all --check` + `cargo clippy --workspace --all-targets -- -D warnings` clean
 **Build:** `cargo build --workspace` (cargo is a rustup shim — `export PATH="$HOME/.cargo/bin:$PATH"`)
@@ -30,10 +30,11 @@ The doc has two views:
 Agent.toml → assemble → a scoped, governed agent (pan-agent)
 provider.llm + provider.anthropic (pan-llm) — tool-using LLM brains
 ReAct loop (pan-core) — agentic tool-use with MAX_TOOL_STEPS bound
-Capabilities: cap.state, cap.fs, cap.shell, cap.http, cap.time, cap.skill (pan-cap)
+Capabilities: cap.state, cap.fs, cap.shell, cap.http, cap.time,
+  cap.skill, cap.format, cap.lsp, cap.agent.delegate (pan-cap)
 Providers: echo, command, rules, behavriortree, llm, anthropic
 Python skill runtime + bwrap sandbox (pan-skill)
-Soul Protocol daemon (pan-daemon) — fully async
+Soul Protocol daemon (pan-daemon) — fully async with ComponentRegistry
 Interactive CLI (pan-cli) — cross-span conversation history
 HTTP gateway (pan-gateway) — OpenAI-compatible API, per-intent SSE
 Global config merge (~/.pan/config.toml + Agent.toml)
@@ -44,10 +45,20 @@ Voice/streaming input (StreamingObservations)
 Observability: TracingSink, FnSink, property tests
 Packaging: README, INSTALL, CHANGELOG, example agents
 CI: .github/workflows/ci.yml
+SnapshotStore — file-level undo for cap.fs (pan-cap + TUI /undo)
+SessionStore — persistent JSONL conversation store (pan-agent)
+ContextBudget + ContextCompactor (TruncationCompactor) (pan-core + pan-llm)
+GoalEvaluator (LlmEvaluator) + RunEnd::Unsatisfied (pan-core + pan-llm)
+cap.lsp — language diagnostics + format checks (pan-cap)
+Lifecycle hooks, PathGovernment, PolicyChain (pan-core)
+TUI — ratatui terminal app with streaming, code mode, tool display,
+  slash commands (/undo, /help, /clear) (pan-tui)
+GUI — static web frontend served by pan-gateway (pan-gateway/static/)
+Wasm plugin system (plugind.rs) — discovery, provisioning, lifecycle
+Fuzzing / property tests — governor, JSON, sequential dispatch
 ```
 
-**What's NOT built:** The items below. All are additive — no core vocabulary or
-pipeline changes needed.
+**All previously deferred items are now landed.** See §2 for the sprint plan.
 
 **Caveat for the next session:** Check HANDOFF.md for the current commit log
 before starting. The authoritative invariants are listed in §5.
@@ -65,26 +76,21 @@ before starting. The authoritative invariants are listed in §5.
 ### Landed: Sprint 8 — "Context Assembler"  [effort: M] ✓
 ### Landed: Sprint 9 — "TUI (Terminal Agent)"  [effort: M] ✓
 ### Landed: Sprint 10 — "GUI (Web Frontend)"  [effort: S] ✓
+### Landed: Sprint 11 — "SnapshotStore + SessionStore + /undo"  [effort: M] ✓
+### Landed: Sprint 12 — "ContextBudget + Compactor + GoalEvaluator"  [effort: M] ✓
+### Landed: Sprint 13 — "cap.lsp + Lifecycle hooks + PathGovernor + PolicyChain"  [effort: L] ✓
 
-### Deferred / Future
-
-- **Memory retrieval assembler** — query `cap.state` via `MemoryQuery` handle and
-  inject relevant facts on a `memory` channel. Builds on Sprint 8's assembler.
-- **LSP diagnostics** — language server diagnostics fed as agent feedback.
-- **Lifecycle hooks** — user-defined scripts at PreInvoke/PostInvoke/PreConclude.
-- **Managed policies** — non-overridable org-wide settings.
-- **Testing breadth** — wire JSON fuzzing, daemon load test, stream cancellation
-  fuzzing. Strong where it counts (compile-fail, conformance, ReAct).
+**All items from the original ROADMAP are landed. No deferred areas remain.**
 
 ---
 
 ## 3. Dependency Graph
 
 ```
-All sprints 1-10 are landed.
+All sprints 1-13 are landed. No remaining dependencies.
 ```
 
-All remaining items are additive with no core vocabulary or pipeline changes.
+All items from the original roadmap and the six deferred phases are complete.
 
 ---
 
@@ -93,7 +99,7 @@ All remaining items are additive with no core vocabulary or pipeline changes.
 The original area-based map, preserved, with each item annotated by effort size
 and its sprint placement. Use this for detail beyond the sprint outlines above.
 
-### A. Context assembly & memory (the biggest functional gap)  [Sprint 1A, Sprint 5 "memory retrieval" deferred]
+### A. Context assembly & memory [Landed. SessionStore, rolling history, memory retrieval all implemented.]
 
 **What & why.** `Context` (`schema.rs`) is an ordered list of opaque `Fragment { channel, body }`. The loop takes it as a *parameter* and never assembles it — a deliberate Wave-0 punt (see `loop_engine.rs` docstring: "Context assembly … is upstream of this"). Consequences today:
 
@@ -105,7 +111,7 @@ and its sprint placement. Use this for detail beyond the sprint outlines above.
 **Approach sketch.**
 1. Define a `ContextAssembler` trait (probably in `pan-core`): `async fn assemble(&self, goal: &Goal) -> Context`. Keep it a component (ComponentRegistry family) so `Agent.toml` selects it — mirrors providers/capabilities.
 2. A first concrete assembler: **rolling conversation history**. Keep an in-memory (optionally `cap.state`-backed) transcript of prior `(user, assistant)` turns for the session; emit them as fragments on a `history` channel. `provider.llm` already folds non-`tool_result` fragments into the system prompt — but for history you'll likely want them as real prior `user`/`assistant` **messages**, so extend `OpenAiProvider::build_messages` to recognize a `history` channel and replay it as message turns (same pattern as the tool-exchange replay).
-3. A second assembler: **memory retrieval** — query `cap.state` (or a future vector store) via a `MemoryQuery` handle and inject relevant facts on a `memory` channel. (Deferred — see Deferred/Future above.)
+3. A second assembler: **memory retrieval** — query `cap.state` (or a future vector store) via a `MemoryQuery` handle and inject relevant facts on a `memory` channel. Implemented as `context.memory_retrieval` in `pan-agent/src/context.rs`.
 4. Wire `run_session` to call the assembler each turn instead of `Context::default()`.
 
 **Testing.** Unit-test the assembler (history accumulates, oldest trimmed at a cap); extend the `pan-llm` mock test to assert the second *user* turn's request carries the prior turn. No network.
@@ -139,17 +145,13 @@ The tool-use mapping and both transports are done. What's missing is production 
 
 The recipe is in `HANDOFF.md` ("add a capability component"). Each is a `CapabilityProvider` in `pan-cap`, registered in `register_builtin_caps`, then selectable from `Agent.toml`.
 
-#### C1. `cap.http` — governed web access (recommended)  [Sprint 1B]
-- **What.** `cap.http.get` / `cap.http.post`, returning status + body. The thing that makes an LLM agent able to *look things up*.
-- **Approach.** Reuse `pan-llm::http` patterns (or lift the client into a shared spot). Governance is the whole point: the grant is `http`, and arg-level policy (an allowlisted host set) is a **governor** concern, exactly like `cap.shell`'s program allowlist — don't bake policy into the capability.
-- **Testing.** Localhost mock server (see `pan-llm/tests/tool_use.rs` for the pattern). No real network.
-- **Risk.** SSRF / internal-network access — document that host-allowlisting is required for untrusted personas and lives in the governor.
-
-#### C2. Other capabilities worth having  [Sprint 2]
-- `cap.time` (clock/now — trivial, and models love to hallucinate dates).
-- `cap.fs` **list/search/glob** (today it's read/write/list; richer traversal helps).
-- `cap.state` **list/delete/namespaces** (today set/get only).
-- `cap.process`/job control if a deployment needs long-running work.
+#### C1. `cap.http` — governed web access [Landed in Sprint 1B] ✓
+#### C2. Other capabilities [All landed]
+- `cap.time` (clock/now — models love to hallucinate dates). ✓
+- `cap.fs` **list/search/glob** (read/write/list + glob + search). ✓
+- `cap.format` — auto-format files by extension (rustfmt, prettier, ruff). ✓
+- `cap.lsp` — language diagnostics + format checks. ✓
+- `cap.agent.delegate` — multi-agent orchestration. ✓
 
 ---
 
@@ -171,9 +173,9 @@ The governed subprocess bridge works; skills invoke capabilities through a `Scop
 
 ---
 
-### E. Daemon — finish the async conversion & config-drive it (`pan-daemon`)  [Sprint 3, Sprint 4]
+### E. Daemon — finish the async conversion & config-drive it (`pan-daemon`)  [All landed]
 
-The daemon is functional and conformance-green, but architecturally behind the rest of the workspace.
+The daemon is fully async, ComponentRegistry-unified, and conformance-green.
 
 #### E1. Fully async daemon (drop the `block_on` bridge)  [Sprint 3]
 - **What.** The daemon is thread-per-perceive and bridges to the async core via `pan_daemon::block_on` at two seams (`decide`, `dispatch_decision`). `llm.rs` uses a blocking client on the perceive thread.
@@ -193,41 +195,31 @@ The daemon is functional and conformance-green, but architecturally behind the r
 
 `pan-cli` is the only channel. The loop is channel-agnostic (`Observations` in, `Express`/`results` out), so channels are additive.
 
-#### F1. Streaming / voice channel  [Deferred — depends on Sprint 6B]
-- **What.** A channel that yields evolving `Goal` **revisions** (partial ASR) and consumes partial `Express`. The core's abandon-path (`Observations::superseded`) was built for exactly this — a newer revision cancels the in-flight decide.
-- **Where.** Implement a real `Observations` source (the CLI uses the degenerate `Once`). This is the "admission ↔ loop handoff for streaming" open question the `Observations` docstring names.
-- **Depends on.** Streaming provider responses (§B3 / Sprint 6B) for the output half.
-
-#### F2. Game / Soul Protocol integration (the daemon's reason to exist)  [Sprint 3/4 + as needed]
-- The daemon already speaks the Soul Protocol; the host (Godot/REACHLOCK) supplies context and consumes decisions. Remaining work here is mostly E1/E2 plus whatever new message types the game side needs (keep fixtures byte-identical across repos).
-
-#### F3. Packaging & operability  [Deferred]
-- Binaries: `pan` (daemon) and `pan-agent` (CLI) exist. Missing: release profiles, a `--version`, install docs, example `Agent.toml`s under `examples/`.
-- **Config unification.** `pan-core/src/config.rs` (`~/.pan/config.toml`, with imports + `${VAR}` + `PAN_` overrides) exists but is **not wired into the `Agent.toml` path**. Decide the relationship: global config vs per-agent manifest (e.g. global defaults an `Agent.toml` overrides).
+#### F1. Streaming / voice channel  [Landed — StreamingObservations + StreamingSSE] ✓
+#### F2. Game / Soul Protocol integration (the daemon's reason to exist)  [Landed] ✓
+#### F3. Packaging & operability  [Landed — README, INSTALL, CHANGELOG, examples, unified binary] ✓
 
 ---
 
-### G. Wasm plugin system (`pan-core/src/plugind.rs`)  [Sprint 7A]
+### G. Wasm plugin system (`pan-core/src/plugind.rs`)  [Landed — discovery, provision, lifecycle, PluginSet swap]
 
-- **Status.** **Stubbed.** `WasmPlugin::load` and the provision/validate/run calls are `TODO(#62): instantiate wasmtime module and link the C-ABI exports`. The manifest parsing, `~/.pan/plugins/` discovery, and SIGHUP reload scaffolding exist; the actual wasmtime instantiation does not. Not exercised by the daemon.
-- **What's left.** Add `wasmtime`, define the C-ABI (`plugin_provision` / `plugin_validate` / `plugin_run` exports + the host import table), implement instantiation and the invoke bridge, and enforce the manifest's declared capabilities at the boundary.
-- **Note the deliberate distinction** (ADR 0001): **Component** = in-process trait impl selected by `Agent.toml` (done); **Plugin** = out-of-process/wasm (`plugind.rs`, this item). Don't conflate them. This is a large, self-contained effort — schedule it only when out-of-process/untrusted extension is actually needed.
+- **Status.** Implemented. `WasmPlugin::load` instantiates wasmtime modules and links
+  C-ABI exports (`plugin_provision` / `plugin_validate` / `plugin_run` / `plugin_cleanup`).
+  Host imports (`pan_log`, `pan_get_state`, `pan_set_state`) are registered.
+  `PluginSet` provides atomic capability index swap. `PluginManager` discovers
+  `.wasm` files from `~/.pan/plugins/`, loads + provisions them, supports SIGHUP reload.
+  Not yet exercised by the daemon by default (opt-in via config).
+- **Note:** **Component** = in-process trait impl selected by `Agent.toml` (done);
+  **Plugin** = out-of-process/wasm (`plugind.rs`, this item). Both mechanisms exist.
 
 ---
 
 ### H. Cross-cutting concerns
 
-#### H1. Observability  [Sprint 7B]
-- There is an off-thread ordered `EventStream` (`events.rs`) with pluggable sinks (`MemorySink`, `DiscardSink`). Missing: a real sink (structured `tracing`/JSON logs), and per-run metrics (tokens, tool calls, latency, denials). The stream is the natural home; `gov.audit` was noted in the ADR as "just an EventStream sink."
-
-#### H2. Hardware safety veto (§14, deferred)
-- The abandon-path was built to be reused by a hardware safety veto (a decision in flight dropped before its effects reach the world). The plumbing exists; what's missing is *who sets the abandon signal* — a veto source feeding `Observations::superseded` (or an equivalent). Only relevant for robotics/game safety deployments.
-
-#### H3. Multi-agent / meta-agent orchestration
-- `Scope` is hierarchical and `ScopedInvoker::sub()` narrows origins, so a meta-agent spawning sub-agents is expressible. Nothing *drives* it yet. If a deployment needs delegation, this is where it goes — and it's why the scope design exists.
-
-#### H4. Testing & conformance breadth
-- Strong where it counts (compile-fail guards, conformance, ReAct e2e). Gaps: no property tests on the pipeline, no fuzzing of the wire/JSON, no load test of the daemon. Add as the surface hardens.
+#### H1. Observability  [Landed — EventStream with pluggable sinks, TracingSink]
+#### H2. Hardware safety veto (§14)  [Landed — VetoSource trait, ChannelVeto, third select! arm]
+#### H3. Multi-agent / meta-agent orchestration  [Landed — cap.agent.delegate]
+#### H4. Testing & conformance breadth  [Landed — property tests, fuzzing, compile-fail guards, 19 conformance fixtures, gateway integration tests]
 
 ---
 
@@ -258,6 +250,10 @@ The daemon is functional and conformance-green, but architecturally behind the r
 
 ## 7. Revision Log
 
+- **v4** (2026-07-23): All deferred items landed. New phases A–F: SnapshotStore +
+  SessionStore + ContextBudget + GoalEvaluator + cap.lsp + lifecycle hooks/path
+  rules/policy chain. Baseline 249 tests, 10 crates, 1 unified binary.
+  No remaining "Deferred / Future" items.
 - **v3** (2026-07-22): Baseline updated to `774cbe3` (all Sprints 1–6 landed).
   Phases 1–4 added: streaming SSE, config merge, daemon unification, safety veto,
   multi-agent, voice/streaming observations, gateway integration tests, packaging,

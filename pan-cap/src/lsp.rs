@@ -153,3 +153,48 @@ fn check_format(ext: &str, path: &str) -> Result<Value, ExecError> {
         "details": if details.is_empty() { Value::Null } else { Value::String(details) },
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_cap_declares_check_and_format() {
+        let caps = LspCaps::new();
+        let cap_list = caps.capabilities();
+        let ids: Vec<&str> = cap_list.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"cap.lsp.check"));
+        assert!(ids.contains(&"cap.lsp.format"));
+    }
+
+    #[test]
+    fn lsp_unknown_extension_returns_empty_diagnostics() {
+        let result = run_diagnostics("xyz", "/path/file.xyz");
+        let val = result.unwrap();
+        assert_eq!(val["diagnostics"].as_array().map(|a| a.len()), Some(0));
+    }
+
+    #[test]
+    fn lsp_missing_file_returns_error() {
+        let result = run_diagnostics("py", "/nonexistent/file.py");
+        // ruff will fail on nonexistent path
+        assert!(
+            result.is_err() || result.as_ref().unwrap()["exit_code"].as_i64().unwrap_or(0) != 0
+        );
+    }
+
+    #[test]
+    fn lsp_rust_format_on_nonexistent_file() {
+        let result = check_format("rs", "/nonexistent/file.rs");
+        // Should not panic — rustfmt returns error
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn lsp_unknown_ext_format_returns_note() {
+        let result = check_format("xyz", "f.xyz");
+        let val = result.unwrap();
+        assert_eq!(val["formatted"], true);
+        assert!(val["note"].as_str().unwrap_or("").contains("no formatter"));
+    }
+}

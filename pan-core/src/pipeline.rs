@@ -1185,3 +1185,133 @@ mod tests {
     // That non-compilation IS the guarantee. `deny_blocks_before_execution`
     // exercises the runtime half (a real Deny never reaches execute).
 }
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::events::{EventStream, MemorySink};
+    use crate::registry::CapabilityRegistry;
+    use crate::schema::Capability;
+
+    struct DenyPolicy;
+    #[async_trait::async_trait]
+    impl Governor for DenyPolicy {
+        fn id(&self) -> &str {
+            "gov.deny"
+        }
+        async fn govern(&self, _: &Scope, _: &str, _: &Value) -> Verdict {
+            Verdict::Deny {
+                reason: "always denied".into(),
+            }
+        }
+    }
+
+    fn reg_with(cap_id: &str) -> CapabilityRegistry {
+        let mut r = CapabilityRegistry::new();
+        r.register(Capability {
+            id: cap_id.into(),
+            summary: "".into(),
+            args_schema: serde_json::json!({}),
+        })
+        .unwrap();
+        r
+    }
+
+    #[tokio::test]
+    async fn policy_chain_first_deny_wins() {
+        let chain = PolicyChain::new()
+            .push(Box::new(DenyPolicy))
+            .push(Box::new(AllowAll));
+        let scope = Scope::system();
+        let verdict = chain.govern(&scope, "cap.fs.read", &Value::Null).await;
+        assert_eq!(
+            verdict,
+            Verdict::Deny {
+                reason: "always denied".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_chain_all_allow_passes() {
+        let chain = PolicyChain::new()
+            .push(Box::new(AllowAll))
+            .push(Box::new(AllowAll));
+        let verdict = chain
+            .govern(&Scope::system(), "anything", &Value::Null)
+            .await;
+        assert_eq!(verdict, Verdict::Allow);
+    }
+
+    #[tokio::test]
+    async fn effect_hook_fires_on_dispatch() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct TestHook(AtomicBool);
+        #[async_trait::async_trait]
+        impl EffectHook for TestHook {
+            fn id(&self) -> &str {
+                "test"
+            }
+            async fn pre_invoke(&self, _: &Scope, _: &str, _: &Value) -> Result<(), String> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let reg = reg_with("test.cap");
+        let hook = TestHook(AtomicBool::new(false));
+        let mut stream = EventStream::spawn(MemorySink::new());
+        let pipeline = Pipeline {
+            registry: &reg,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+            hooks: vec![&hook],
+        };
+        let _ = pipeline
+            .dispatch(EffectRequest {
+                capability: "test.cap".into(),
+                args: Value::Null,
+                correlation: None,
+                scope: Scope::system(),
+            })
+            .await;
+        stream.shutdown();
+        assert!(hook.0.load(Ordering::SeqCst), "pre_invoke must have fired");
+    }
+
+    #[tokio::test]
+    async fn path_governor_denies_matching_path() {
+        let inner = ScopedGovernor::new().grant("persona.assistant", ["cap.fs"]);
+        let pg = PathGovernor::new(Box::new(inner)).deny_path("cap.fs", "/etc/**");
+        let scope = Scope::new("persona.assistant");
+        let verdict = pg
+            .govern(
+                &scope,
+                "cap.fs.read",
+                &serde_json::json!({"path": "/etc/passwd"}),
+            )
+            .await;
+        assert!(
+            matches!(verdict, Verdict::Deny { .. }),
+            "path must be denied by rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn path_governor_allow_allows() {
+        let inner = ScopedGovernor::new().grant("persona.assistant", ["cap.fs"]);
+        let pg = PathGovernor::new(Box::new(inner)).allow_path("cap.fs", "/home/**");
+        let scope = Scope::new("persona.assistant");
+        // Path matches the allow rule, so it should pass through to inner governor.
+        let verdict = pg
+            .govern(
+                &scope,
+                "cap.fs.read",
+                &serde_json::json!({"path": "/home/file.txt"}),
+            )
+            .await;
+        assert_eq!(verdict, Verdict::Allow);
+    }
+}

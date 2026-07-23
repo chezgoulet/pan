@@ -1067,4 +1067,66 @@ mod tests {
         );
         stream.shutdown();
     }
+
+    #[tokio::test]
+    async fn goal_evaluator_unsatisfied_changes_run_end() {
+        use crate::schema::GoalEval;
+
+        struct MockEvaluator;
+        #[async_trait::async_trait]
+        impl GoalEvaluator for MockEvaluator {
+            fn id(&self) -> &str {
+                "mock"
+            }
+            async fn evaluate(&self, _: &Goal, _: &Context, _: &RunReport) -> GoalEval {
+                GoalEval::Unsatisfied {
+                    reason: "not good enough".into(),
+                }
+            }
+        }
+
+        let provider = ScriptedProvider {
+            decision: Decision {
+                intents: vec![
+                    ActionIntent::Express {
+                        body: "done".into(),
+                    },
+                    ActionIntent::Conclude {
+                        outcome: Outcome::Achieved,
+                    },
+                ],
+            },
+        };
+        let mut caps = CapabilityRegistry::new();
+        caps.register(cap("test.cap")).unwrap();
+        let mut stream = EventStream::spawn(MemorySink::new());
+        let pipe = Pipeline {
+            registry: &caps,
+            governor: &AllowAll,
+            executor: &EchoExecutor,
+            events: &stream,
+            hooks: vec![],
+        };
+        let lp = Loop {
+            provider: &provider,
+            pipeline: &pipe,
+            events: &stream,
+            scope: Scope::system(),
+            token_tx: None,
+            veto_source: NO_VETO,
+            stall_detector: None,
+            compactor: None,
+            context_budget: None,
+            evaluator: Some(&MockEvaluator),
+        };
+        let goal = goal("eval-test", 0);
+        let mut obs = Once(Some(goal));
+        let report = lp.run_span(&mut obs, &Context::default()).await;
+        stream.shutdown();
+        assert!(
+            matches!(report.end, Some(RunEnd::Unsatisfied { ref reason }) if reason == "not good enough"),
+            "evaluator must override Achieved with Unsatisfied: {:?}",
+            report.end
+        );
+    }
 }

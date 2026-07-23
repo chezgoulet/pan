@@ -91,3 +91,48 @@ impl SnapshotStore {
         self.root.join(escaped)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_then_undo_restores_content() {
+        let dir = std::env::temp_dir().join(format!("pan_snap_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let store = SnapshotStore::new(dir.join("snapshots"));
+
+        let file_path = dir.join("test.txt");
+        std::fs::write(&file_path, "original content").unwrap();
+
+        // Snapshot the original.
+        let id = store.snapshot(&file_path).unwrap();
+        assert!(!id.is_empty());
+
+        // Overwrite.
+        std::fs::write(&file_path, "modified content").unwrap();
+
+        // Undo (restore latest).
+        store.restore_latest(&file_path).unwrap();
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "original content");
+
+        // List should show one snapshot.
+        let metas = store.list(&file_path).unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].path, file_path.to_string_lossy());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_list_empty_for_unknown_path() {
+        let dir = std::env::temp_dir().join(format!("pan_snap_empty_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let store = SnapshotStore::new(dir.join("snapshots"));
+        let path = dir.join("nonexistent.txt");
+        let metas = store.list(&path).unwrap();
+        assert!(metas.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

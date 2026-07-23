@@ -9,17 +9,29 @@ the always-loaded orientation is [`/CLAUDE.md`](../CLAUDE.md). Read both first._
 Pan is a **runnable, governed, interactive, tool-using agent assembled from
 `Agent.toml`** — with a real LLM brain (`provider.llm`) that *uses* tools — plus
 an OpenAI-compatible HTTP gateway, a Python skill runtime, and the Soul Protocol
-daemon. Everything below is **green**: 223 tests, workspace `fmt` + `clippy -D
+daemon. Everything below is **green**: 249 tests, workspace `fmt` + `clippy -D
 warnings` clean, the four `pan-core` compile-fail guards hold, and Soul Protocol
 conformance is 19/19.
 
-Sprints 1–6 are landed, and all ROADMAP deferred items are built. The remaining
-gaps are: a `ContextAssembler` trait, a TUI terminal app, a web frontend GUI,
-wasm plugin lifecycle wiring, and a non-blocking LLM HTTP client.
+All ROADMAP items — including the six deferred phases — are landed. The remaining
+gaps are documentation polish, integration test breadth, and TUI real-time streaming.
 
-This effort added these commits on top of `f16fd15` (each a coherent, green step):
+This effort added these commits on top of `f16fd15`: 
 
 ```
+2e43135 Phase F: Lifecycle hooks + path-scoped rules + policy chain
+2534c1f Phase E: cap.lsp — language diagnostics capability
+16713c5 Phase D: GoalEvaluator — post-span satisfaction check
+d9bb5ee Phase C: ContextBudget + Compactor (TruncationCompactor)
+3b55f4e Phase B: SessionStore — persistent conversation store
+5b23500 Phase A: SnapshotStore + TUI /undo
+17a9f5e cap.format — auto code formatter capability
+f566aa5 Memory retrieval assembler + StallDetector
+38aff96 TUI rewrite: streaming tokens, code mode, tool display, markdown
+28f4c2a Consolidate into one pan binary with subcommands
+a2ddaa3 Context assembler + fuzzing/load tests
+e9820ba Wasm plugin lifecycle + async HTTP client
+d7f6d4a Docs cleanup + GUI web frontend + TUI
 774cbe3 Phase 4c: StreamingObservations for voice/streaming input
 bef3c3a Phase 4b: multi-agent orchestration (cap.agent.delegate)
 294843c Phase 4a: packaging docs, safety veto, gateway integration tests
@@ -55,7 +67,7 @@ The ADR's four decisions (D1–D4) are all landed. See the ADR's
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo test --workspace                              # 223 tests
+cargo test --workspace                              # 249 tests
 cargo fmt --all --check                             # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings   # CI lint gate
 ( cd pan-core && bash verify.sh )                   # the compile-fail guards
@@ -83,18 +95,19 @@ state = true
 path = "memory.json"
 ```
 
-## Crate map (8 crates)
+## Crate map (10 crates)
 
 | Crate | Role | Notes |
 |---|---|---|
-| `pan-core` | vocabulary, async pipeline/loop, Scope, ScopedInvoker, ComponentRegistry, Toolbox | the irreducible core; async via `async-trait`; type-state `Governed` invariant intact; ReAct loop + `TOOL_RESULT_CHANNEL`; `HostAllowlistGovernor` for `cap.http` URL policy; `Pipeline::execute_with_invoker` for cross-capability execution; `PipelineInvoker::sub()` for delegation |
+| `pan-core` | vocabulary, async pipeline/loop, Scope, ScopedInvoker, ComponentRegistry, Toolbox | the irreducible core; async via `async-trait`; type-state `Governed` invariant intact; ReAct loop + `TOOL_RESULT_CHANNEL`; `HostAllowlistGovernor` for `cap.http` URL policy; `Pipeline::execute_with_invoker` for cross-capability execution; `PipelineInvoker::sub()` for delegation; ContextBudget + ContextCompactor trait; GoalEvaluator trait; EffectHook + PathGovernor + PolicyChain |
 | `pan-daemon` | Soul Protocol server (`pan serve`) | **fully async** (tokio TcpListener, tokio::spawn per perceive, AsyncBufReadExt/AsyncWriteExt framing); conformance 19/19; has its own single-shot local `llm.rs` |
 | `pan-skill` | Python skill runtime + OS sandbox | `SkillRunner` spawns `python3`, services `cap.invoke` through a `ScopedInvoker`; `pan.py` embedded; `bwrap` sandbox (namespace isolation, cap-drop ALL, graceful fallback) |
-| `pan-agent` | `Agent.toml` manifest + assembler | `assemble` → `AssembledAgent { scope, governor, provider, toolbox }`; `builtin_registry()`; providers `echo`/`command`/`rules`/`behaviortree`/`llm`/`anthropic` |
-| `pan-cap` | `cap.*` components | `cap.state` (KV, file-backed), `cap.fs` (rooted, path-jailed: read/write/list/glob/search), `cap.shell` (direct exec), `cap.http` (GET/POST, blocking TCP), `cap.time` (ISO 8601 now/today), `cap.skill` (create/edit/list/delete/run lifecycle) |
-| `pan-cli` | interactive REPL | `run_session` with cross-span conversation history (injects `history` channel fragment); the `pan-agent` binary (distinct from daemon's `pan`) |
-| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling on the ReAct loop; stateless transcript rebuild; retry/backoff on 429/5xx; std-only HTTP/1.0 over plain **or** rustls TLS (local + cloud BYOK); `provider.anthropic`: native Messages API |
-| `pan-gateway` | HTTP gateway (`pan-gateway` binary) | axum server: OpenAI-compatible `/v1/chat/completions`, Pan-native `/v1/agents/:name/goals`, agent delegation, streaming SSE, atomic metrics, Bearer-token auth; `AgentPool` loads from directory of `Agent.toml` files |
+| `pan-agent` | `Agent.toml` manifest + assembler | `assemble` → `AssembledAgent { scope, governor, provider, toolbox }`; `builtin_registry()`; providers `echo`/`command`/`rules`/`behaviortree`/`llm`/`anthropic`; context assemblers `rolling_history`/`memory_retrieval`/`session`; SessionStore |
+| `pan-cap` | `cap.*` components | `cap.state` (KV, file-backed), `cap.fs` (rooted, path-jailed: read/write/list/glob/search/undo, auto-snapshot), `cap.shell` (direct exec), `cap.http` (GET/POST, blocking TCP), `cap.time` (ISO 8601 now/today), `cap.skill` (create/edit/list/delete/run lifecycle), `cap.format` (auto-format by extension), `cap.lsp` (diagnostics + format checks) |
+| `pan-cli` | interactive REPL | `run_session` with cross-span conversation history (injects `history` channel fragment); the `pan` binary's `run` subcommand |
+| `pan-llm` | tool-using LLM providers | `provider.llm`: OpenAI-compatible function calling on the ReAct loop; stateless transcript rebuild; retry/backoff on 429/5xx; std-only HTTP/1.0 over plain **or** rustls TLS (local + cloud BYOK); `provider.anthropic`: native Messages API; TruncationCompactor; LlmEvaluator |
+| `pan-gateway` | HTTP gateway (`pan gateway` subcommand) | axum server: OpenAI-compatible `/v1/chat/completions`, Pan-native `/v1/agents/:name/goals`, agent delegation, streaming SSE, atomic metrics, Bearer-token auth; `AgentPool` loads from directory of `Agent.toml` files; serves TUI web frontend |
+| `pan-tui` | Terminal UI (`pan tui` subcommand) | ratatui/crossterm: scrollable conversation, tool panel, streaming tokens, code mode (plan/build toggle, Tab), markdown rendering, input history, slash commands (/undo, /help, /clear, /quit) |
 
 ## The through-line (so the mental model transfers)
 
@@ -173,45 +186,29 @@ registered with `register_provider` in `pan-agent/src/builtin.rs`.
 
 ## What's next
 
-**Landed across all sprints and phases:**
-- Sprints 1–6 (all items from the original ROADMAP) ✓
-- pan-gateway HTTP server with streaming SSE ✓
-- Global config merge (`~/.pan/config.toml` + `Agent.toml`) ✓
-- Daemon ComponentRegistry unification (SessionPipeline) ✓
-- Streaming provider contract (`token_tx` in `Loop`) ✓
-- Per-intent SSE in the gateway (`run_agent_streaming`) ✓
-- Packaging docs (README, INSTALL, CHANGELOG, examples) ✓
-- Hardware safety veto (VetoSource trait, ChannelVeto) ✓
-- Multi-agent orchestration (cap.agent.delegate) ✓
-- Voice/streaming input (StreamingObservations) ✓
-- Property tests (governor fuzzing, JSON round-trip) ✓
-- Gateway integration tests (10 HTTP endpoint tests) ✓
-- CI (`fmt` + `clippy` + `test` + `verify.sh`) ✓
+**All ROADMAP items — including all 6 deferred phases — are landed. The feature
+surface is complete.**
 
-**Genuinely remaining:**
+**Landed across all sprints, phases, and deferred items:**
+- Sprints 1–10 (all items from the original ROADMAP) ✓
+- Phase A: SnapshotStore + TUI /undo ✓
+- Phase B: SessionStore — persistent JSONL conversation store ✓
+- Phase C: ContextBudget + TruncationCompactor ✓
+- Phase D: GoalEvaluator (LlmEvaluator) + RunEnd::Unsatisfied ✓
+- Phase E: cap.lsp — language diagnostics + format checks ✓
+- Phase F: Lifecycle hooks + PathGovernor + PolicyChain ✓
 
-1. **Context Assembler trait** (ROADMAP §A) — the biggest functional gap.
-   A `ContextAssembler` trait registered in ComponentRegistry, with a rolling
-   conversation-history impl. The CLI currently injects a `history` fragment
-   ad-hoc; formalize it. Memory retrieval (querying `cap.state` via `MemoryQuery`)
-   is the deferred variant. [effort: M]
-
-2. **TUI (terminal UI, new crate `pan-tui`)** — a ratatui/crossterm terminal app
-   with scrollable conversation history, capability output panel, and streaming
-   token display. Reuses `AssembledAgent` + `Loop` with `token_tx`. [effort: M]
-
-3. **GUI (web frontend, served by pan-gateway)** — a static HTML/JS single-page
-   app that uses the existing `/v1/chat/completions` SSE endpoint. Zero core
-   changes; ~10 lines of backend code for static file serving. [effort: S]
-
-4. **Wasm plugins** (Sprint 7) — `plugind.rs` TODOs #62/#58: register loaded
-   wasm plugins into the lifecycle and implement real health probes. [effort: S]
-
-5. **True async HTTP client** — both `pan-llm::http` and the daemon's LLM use
-   blocking `TcpStream` inside `async fn`. Replace with a non-blocking HTTP
-   client (or add an async transport to the existing one). [effort: M]
-
-6. **Fuzzing / load testing** — wire JSON fuzzing, daemon load test, stream
-   cancellation fuzzing. [effort: M]
+**Genuinely remaining polish:**
+- **TUI real-time streaming** — tokens are currently buffered post-hoc. Real-time
+  requires borrow-split refactor for `tokio::select!` racing key reads against
+  token arrival.
+- **Integration test breadth** — the new features lack dedicated tests (SessionStore
+  round-trip, SnapshotStore/snapshot→undo, PolicyChain composition, TruncationCompactor,
+  EffectHook, GoalEvaluator mock, LspCaps routing).
+- **Documentation refresh** — ADR 0001's "Pending" section needs updating to reflect
+  the six deferred items moving to landed.
+- **Async daemon LLM** — the daemon's `llm.rs` still uses a blocking client on the
+  tokio thread. Deferred: NPCs make single-shot `Express` calls, so blocking is
+  acceptable. Convert when a streaming channel needs it.
 
 Before starting any of these, confirm `git log` matches this doc's Status.

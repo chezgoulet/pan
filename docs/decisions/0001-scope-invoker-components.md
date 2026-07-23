@@ -349,17 +349,49 @@ Landed (this pass — synchronous, all guarantees green, 96 workspace tests):
 - **Gateway integration tests** — 10 HTTP endpoint tests with `tempfile` + `tower`.
 - **CI** — `.github/workflows/ci.yml`.
 - **Packaging** — README, INSTALL, CHANGELOG, example agents.
+- **Context Assembler trait** — `ContextAssembler` registered in ComponentRegistry,
+  with three implementations: `RollingConversationHistory` (in-memory rolling turns),
+  `MemoryRetrievalAssembler` (query cap.state), `SessionContextAssembler` (JSONL-
+  backed persistent store). Registered as `context.rolling_history`,
+  `context.memory_retrieval`, `context.session`.
+- **TUI (terminal agent)** — `pan-tui` crate with ratatui/crossterm. Reuses
+  `AssembledAgent` + `Loop` with `token_tx`. Supports streaming token display,
+  plan/build modes, markdown rendering, tool activity panel, input history,
+  and slash commands (`/undo`, `/help`, `/clear`, `/quit`).
+- **GUI (web frontend)** — static HTML/JS served by `pan-gateway` using the existing
+  SSE `/v1/chat/completions` API. Zero core vocabulary changes.
+- **Wasm plugin lifecycle** — `WasmPlugin` with wasmtime instantiation, C-ABI link,
+  host imports (`pan_log`, `pan_get_state`, `pan_set_state`), `PluginSet` atomic
+  capability index, `PluginManager` file-watch discovery + SIGHUP reload.
+- **SnapshotStore** — directory-based file snapshots. `FsCaps` with optional
+  `SnapshotStore`, auto-snapshots before write, `cap.fs.undo` restore capability.
+  TUI `/undo` and `/undo list <path>` slash commands.
+- **SessionStore** — JSONL-backed persistent conversation store per agent.
+  `SessionContextAssembler` loads history on assemble and appends on commit.
+- **ContextBudget + ContextCompactor** — `ContextBudget` with token estimation
+  (chars/4 heuristic), `ContextCompactor` trait. `TruncationCompactor` drops oldest
+  non-essential fragments. Wired into Loop::run_span for automated compaction.
+- **GoalEvaluator** — `GoalEvaluator` trait with `LlmEvaluator` impl (lightweight
+  LLM check after Conclude(Achieved)). `RunEnd::Unsatisfied` variant. Wired into
+  Loop::run_span after Achieved.
+- **`cap.lsp`** — language diagnostics (`cap.lsp.check`) and format checking
+  (`cap.lsp.format`). Per-extension checkers: `rustc`/`ruff`/`tsc`/`node`/`go vet`.
+  Registered as `cap.lsp`.
+- **Lifecycle hooks** — `EffectHook` trait with `pre_invoke`/`post_invoke` around
+  every effect execution. `LoggingHook` impl for stderr audit. Wired into
+  `Pipeline::execute` and `execute_with_invoker`.
+- **PathGovernor** — arg-level path glob matching for `cap.fs.*` capabilities.
+  `allow_path`/`deny_path` builder methods. Delegates to inner governor after
+  path rule check.
+- **PolicyChain** — compose multiple governors with fail-fast semantics (first
+  non-Allow wins). Combines `ScopedGovernor` + `PathGovernor` + `HostAllowlistGovernor`.
 
 Pending (next):
 
-- **`ContextAssembler` trait** — formalize the ad-hoc `history` fragment injection
-  into a `ComponentRegistry`-selectable trait. Rolling conversation-history impl
-  first; memory retrieval (via `MemoryQuery`) deferred.
-- **TUI (terminal agent)** — new crate `pan-tui` with ratatui/crossterm. Reuses
-  `AssembledAgent` + `Loop` with `token_tx`.
-- **GUI (web frontend)** — static HTML/JS served by `pan-gateway` using the existing
-  SSE `/v1/chat/completions` API. Zero core vocabulary changes.
-- **Wasm plugin lifecycle** — register loaded wasm plugins into `Lifecycle`
-  (`plugind.rs` TODOs #62/#58).
 - **Non-blocking LLM HTTP client** — replace `std::net::TcpStream` in
-  `pan-llm::http` with an async transport.
+  `pan-llm::http` with an async transport for streaming responses. Deferred:
+  the blocking client is acceptable for single-shot decisions. Convert when a
+  streaming channel needs it.
+- **TUI real-time streaming** — tokens are currently buffered post-hoc. Real-time
+  requires borrow-split refactor for `tokio::select!` racing key reads against
+  token arrivals.

@@ -100,3 +100,70 @@ impl SessionStore {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_round_trip() {
+        let dir = std::env::temp_dir().join(format!("pan_session_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("session.jsonl");
+        let store = SessionStore::new(&path);
+
+        let goal = pan_core::schema::Goal {
+            id: "t1".into(),
+            revision: 0,
+            objective: "write a file".into(),
+            trigger: pan_core::schema::Trigger::Utterance {
+                from: "user".into(),
+                content: "write a file".into(),
+            },
+        };
+        store.append(
+            &goal,
+            &["done".into()],
+            &[("cap.fs.write".into(), serde_json::json!({"bytes": 42}))],
+        );
+
+        let turns = store.turns();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].objective, "write a file");
+        assert_eq!(turns[0].expressed, vec!["done"]);
+        assert_eq!(turns[0].results.len(), 1);
+
+        // Reload from file.
+        let store2 = SessionStore::new(&path);
+        let turns2 = store2.turns();
+        assert_eq!(turns2.len(), 1);
+        assert_eq!(turns2[0].objective, "write a file");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_max_turns_trim() {
+        let dir = std::env::temp_dir().join(format!("pan_session_trim_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("session.jsonl");
+        let store = SessionStore::new(&path).with_max_turns(3);
+
+        let goal = pan_core::schema::Goal {
+            id: "t".into(),
+            revision: 0,
+            objective: "msg".into(),
+            trigger: pan_core::schema::Trigger::Tick { sequence: 0 },
+        };
+        for i in 0..5 {
+            store.append(&goal, &[format!("reply {i}")], &[]);
+        }
+
+        let turns = store.turns();
+        assert_eq!(turns.len(), 3, "should keep only max_turns");
+        assert_eq!(turns[0].expressed[0], "reply 2");
+        assert_eq!(turns[2].expressed[0], "reply 4");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
