@@ -19,7 +19,7 @@ The doc has two views:
 ## 1. Current Baseline
 
 **Branch:** `testing` at `2e43135` (2026-07-23)
-**Metrics:** 249 tests (all pass), 10 crates, 1 unified binary, 4 compile-fail guards,
+**Metrics:** 249 tests (all pass), 9 crates, 1 unified binary, 4 compile-fail guards,
 19 conformance tests covering 15 Soul Protocol fixtures (all green)
 **Gate:** `cargo fmt --all --check` + `cargo clippy --workspace --all-targets -- -D warnings` clean
 **Build:** `cargo build --workspace` (cargo is a rustup shim — `export PATH="$HOME/.cargo/bin:$PATH"`)
