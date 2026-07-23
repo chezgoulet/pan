@@ -133,6 +133,8 @@ impl CapabilityProvider for AgentCaps {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Once(Some(goal));
         let report = lp.run_span(&mut obs, &Context::default()).await;

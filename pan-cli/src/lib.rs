@@ -51,6 +51,8 @@ where
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
         stall_detector: None,
+        compactor: None,
+        context_budget: None,
     };
 
     let mut lines = reader.lines();

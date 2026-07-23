@@ -270,6 +270,38 @@ pub trait ContextAssembler: Send + Sync {
     async fn commit(&self, _goal: &Goal, _report: &crate::loop_engine::RunReport) {}
 }
 
+/// Token budget for a span's working context.
+///
+/// When the estimated token count of the context exceeds `max_tokens`, the
+/// loop invokes its [`ContextCompactor`] to trim the context before the
+/// next `decide` call.
+#[derive(Debug, Clone)]
+pub struct ContextBudget {
+    pub max_tokens: usize,
+}
+
+impl ContextBudget {
+    /// Estimate the token count of a context using a simple heuristic
+    /// (chars / 4). Precise counting (tiktoken) is a future refinement.
+    pub fn estimate_tokens(ctx: &Context) -> usize {
+        let chars: usize = ctx.fragments.iter().map(|f| f.body.len()).sum();
+        chars / 4
+    }
+}
+
+/// Compacts a [`Context`] that has exceeded its [`ContextBudget`].
+///
+/// Implementations are `Send + Sync` and registered via the
+/// [`ComponentRegistry`] family `context_compactors`.
+#[async_trait::async_trait]
+pub trait ContextCompactor: Send + Sync {
+    fn id(&self) -> &str;
+
+    /// Compact `ctx` to fit within `budget`. Returns a new context with
+    /// non-essential fragments removed or summarized.
+    async fn compact(&self, ctx: &Context, budget: &ContextBudget) -> Context;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

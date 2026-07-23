@@ -27,7 +27,10 @@
 use crate::events::{EventKind, EventStream};
 use crate::invoker::PipelineInvoker;
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::schema::{ActionIntent, Context, Decision, Fragment, Goal, Outcome, Provider, Scope};
+use crate::schema::{
+    ActionIntent, Context, ContextBudget, ContextCompactor, Decision, Fragment, Goal, Outcome,
+    Provider, Scope,
+};
 
 /// The context channel on which the loop folds executed-capability results back
 /// for the provider's next reasoning step (the ReAct feedback). It is opaque to
@@ -283,6 +286,11 @@ pub struct Loop<'a> {
     /// with identical args N times consecutively, the detector adds a
     /// context fragment noting the stall so the provider can change approach.
     pub stall_detector: Option<std::sync::Mutex<StallDetector>>,
+    /// Optional context compactor. When the working context exceeds
+    /// `context_budget`, the compactor trims it before the next decide.
+    pub compactor: Option<&'a dyn ContextCompactor>,
+    /// Token budget for the working context. Ignored when `compactor` is None.
+    pub context_budget: Option<ContextBudget>,
 }
 
 impl<'a> Loop<'a> {
@@ -308,6 +316,14 @@ impl<'a> Loop<'a> {
             // invokes produced; a new goal (or a superseding revision) starts
             // fresh. `ctx` is the assembled base; we never mutate the caller's.
             let mut working_ctx = ctx.clone();
+            // Compact base context if it exceeds budget from the start.
+            if let Some(compactor) = self.compactor {
+                if let Some(budget) = &self.context_budget {
+                    if ContextBudget::estimate_tokens(&working_ctx) > budget.max_tokens {
+                        working_ctx = compactor.compact(&working_ctx, budget).await;
+                    }
+                }
+            }
             let mut tool_steps: u32 = 0;
 
             // INNER: ReAct — decide, act, fold results, decide again on the SAME
@@ -388,6 +404,14 @@ impl<'a> Loop<'a> {
                         return report;
                     }
                     working_ctx.fragments.extend(tool_results);
+                    // Compact if budget is set and exceeded.
+                    if let Some(compactor) = self.compactor {
+                        if let Some(budget) = &self.context_budget {
+                            if ContextBudget::estimate_tokens(&working_ctx) > budget.max_tokens {
+                                working_ctx = compactor.compact(&working_ctx, budget).await;
+                            }
+                        }
+                    }
                     continue; // re-decide on the same goal, results in hand.
                 }
 
@@ -616,6 +640,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -680,6 +706,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -729,6 +757,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -829,6 +859,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = SupersedeAfter {
             first: Some(goal("g", 0)),
@@ -936,6 +968,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -987,6 +1021,8 @@ mod tests {
             token_tx: None,
             veto_source: NO_VETO,
             stall_detector: None,
+            compactor: None,
+            context_budget: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;

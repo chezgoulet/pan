@@ -52,6 +52,8 @@ async fn drive(label: &str, provider: &dyn Provider, trigger: Trigger) {
         token_tx: None,
         veto_source: pan_core::loop_engine::NO_VETO,
         stall_detector: None,
+        compactor: None,
+        context_budget: None,
     };
     let mut obs = Once(Some(Goal {
         id: "demo".into(),

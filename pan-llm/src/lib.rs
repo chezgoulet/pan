@@ -23,6 +23,7 @@
 //! ```
 
 pub mod anthropic;
+pub mod compactor;
 pub mod http;
 pub mod openai;
 
