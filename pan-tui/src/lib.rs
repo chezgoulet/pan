@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, watch};
 use pan_agent::AssembledAgent;
 use pan_core::events::{EventStream, MemorySink};
 use pan_core::loop_engine::{Loop, Once};
-use pan_core::pipeline::{Pipeline, ScopedGovernor};
-use pan_core::schema::{Context, Goal, Trigger};
+use pan_core::pipeline::{AllowAll, EffectRequest, Pipeline, ScopedGovernor};
+use pan_core::schema::{Context, Goal, Trigger, Value};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -238,7 +238,11 @@ impl<'a> App<'a> {
                                 content: msg.clone(),
                                 timestamp: Self::timestamp(),
                             });
-                            self.run_agent(msg).await;
+                            if msg.starts_with('/') {
+                                self.handle_slash_command(&msg).await;
+                            } else {
+                                self.run_agent(msg).await;
+                            }
                         }
                     }
                     KeyCode::Esc => return Ok(true),
@@ -353,6 +357,172 @@ impl<'a> App<'a> {
 
         self.started_at = None;
         self.running = false;
+    }
+
+    /// Handle a slash-prefixed meta-command without going through the agent loop.
+    async fn handle_slash_command(&mut self, input: &str) {
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        match parts.first().copied().unwrap_or("") {
+            "/undo" => {
+                let sub = parts.get(1).copied().unwrap_or("");
+                if sub == "list" {
+                    let path = parts.get(2).copied().unwrap_or("");
+                    if path.is_empty() {
+                        self.messages.push(Message {
+                            role: "error".into(),
+                            content: "usage: /undo list <path>".into(),
+                            timestamp: Self::timestamp(),
+                        });
+                        return;
+                    }
+                    let args = serde_json::json!({ "path": path, "_list": true });
+                    let msg_idx = self.messages.len();
+                    self.messages.push(Message {
+                        role: "assistant".into(),
+                        content: String::new(),
+                        timestamp: Self::timestamp(),
+                    });
+                    match self.dispatch_capability("cap.fs.undo", args).await {
+                        Ok(val) => {
+                            let snapshots = val
+                                .get("snapshots")
+                                .and_then(|v| v.as_array())
+                                .map(|a| {
+                                    a.iter()
+                                        .map(|s| {
+                                            let id =
+                                                s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                            let ts = s
+                                                .get("timestamp")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            format!("  {id}  (t={ts})")
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
+                                .unwrap_or_default();
+                            self.messages[msg_idx].content =
+                                format!("[undo] snapshots for `{path}`:\n{snapshots}");
+                        }
+                        Err(e) => {
+                            self.messages[msg_idx].role = "error".into();
+                            self.messages[msg_idx].content = format!("[undo] {e}");
+                        }
+                    }
+                    return;
+                }
+                let path = sub;
+                if path.is_empty() {
+                    self.messages.push(Message {
+                        role: "error".into(),
+                        content: "usage: /undo <path> [snapshot_id]".into(),
+                        timestamp: Self::timestamp(),
+                    });
+                    return;
+                }
+                let snapshot_id = parts.get(2).copied();
+                let mut args = serde_json::json!({ "path": path });
+                if let Some(id) = snapshot_id {
+                    args["snapshot_id"] = Value::String(id.to_string());
+                }
+                let msg_idx = self.messages.len();
+                self.messages.push(Message {
+                    role: "assistant".into(),
+                    content: String::new(),
+                    timestamp: Self::timestamp(),
+                });
+                let result = self.dispatch_capability("cap.fs.undo", args).await;
+                match result {
+                    Ok(val) => {
+                        self.messages[msg_idx].content = format!(
+                            "[undo] restored `{path}` (snapshot: {:?})",
+                            val.get("snapshot_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                        );
+                    }
+                    Err(e) => {
+                        self.messages[msg_idx].role = "error".into();
+                        self.messages[msg_idx].content = format!("[undo] {e}");
+                    }
+                }
+            }
+            "/help" | "/?" => {
+                self.messages.push(Message {
+                    role: "assistant".into(),
+                    content: "\
+Slash commands:
+  /undo <path> [snapshot_id]   — restore file from snapshot
+  /undo list <path>            — list snapshots for a file
+  /help                        — this help
+  /clear  or Ctrl+L            — clear conversation
+  /quit  or Ctrl+C             — cancel running / Esc to quit"
+                        .into(),
+                    timestamp: Self::timestamp(),
+                });
+            }
+            "/clear" => {
+                self.messages.clear();
+                self.tool_events.clear();
+                self.message_count = 0;
+                self.token_count = 0;
+            }
+            "/quit" | "/exit" => {
+                // Will be handled at the next loop iteration as Esc.
+            }
+            _ => {
+                self.messages.push(Message {
+                    role: "error".into(),
+                    content: format!("unknown command `{}` — type /help", parts[0]),
+                    timestamp: Self::timestamp(),
+                });
+            }
+        }
+    }
+
+    /// Dispatch a capability directly through the pipeline with AllowAll governor.
+    async fn dispatch_capability(&self, capability: &str, args: Value) -> Result<Value, String> {
+        let agent = &self.agent;
+        let registry = agent.toolbox.registry();
+        let allow_all = AllowAll;
+        let memory_sink = MemorySink::new();
+        let mut event_stream = EventStream::spawn(memory_sink);
+        let pipeline = Pipeline {
+            registry: &registry,
+            governor: &allow_all,
+            executor: &agent.toolbox,
+            events: &event_stream,
+        };
+        let req = EffectRequest {
+            capability: capability.to_string(),
+            args,
+            correlation: None,
+            scope: agent.scope.clone(),
+        };
+        let result = pipeline.dispatch(req).await;
+        event_stream.shutdown();
+        result.map(|effected| effected.result).map_err(|e| match e {
+            pan_core::pipeline::PipelineError::Unresolved { capability } => {
+                format!("unknown capability `{capability}`")
+            }
+            pan_core::pipeline::PipelineError::Invalid { capability, reason } => {
+                format!("`{capability}`: {reason}")
+            }
+            pan_core::pipeline::PipelineError::Rejected(r) => {
+                let reason = match &r.verdict {
+                    pan_core::pipeline::Verdict::Deny { reason } => reason.clone(),
+                    pan_core::pipeline::Verdict::RequireApproval { reason } => {
+                        format!("requires approval: {reason}")
+                    }
+                    pan_core::pipeline::Verdict::Allow => "denied".into(),
+                };
+                format!("rejected: {reason}")
+            }
+            pan_core::pipeline::PipelineError::Execution { capability, reason } => {
+                format!("`{capability}`: {reason}")
+            }
+        })
     }
 
     fn render(&self, f: &mut Frame) {
@@ -517,8 +687,8 @@ impl<'a> App<'a> {
         let input_block = Block::default()
             .borders(Borders::TOP)
             .title(match self.mode {
-                Mode::Build => "Input (Tab: plan mode, Ctrl+C: cancel, Esc: quit)",
-                Mode::Plan => "Input — Plan Mode (Tab: build mode, Ctrl+C: cancel, Esc: quit)",
+                Mode::Build => "Input (Tab: plan mode, Ctrl+C: cancel, /help: commands, Esc: quit)",
+                Mode::Plan => "Input — Plan Mode (Tab: build mode, Ctrl+C: cancel, /help: commands, Esc: quit)",
             })
             .border_style(match self.mode {
                 Mode::Build => Style::default().fg(Color::Green),

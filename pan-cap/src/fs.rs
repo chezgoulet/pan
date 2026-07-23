@@ -11,10 +11,13 @@
 //! (the same trade-off the LLM client makes).
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use pan_core::pipeline::ExecError;
 use pan_core::schema::{Capability, Value};
 use pan_core::toolbox::CapabilityProvider;
+
+use crate::snapshot::SnapshotStore;
 
 /// Walk a directory tree recursively, yielding all files.
 fn walk_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -105,13 +108,25 @@ fn glob_match_rec(pat: &[char], pth: &[char], pi: usize, si: usize) -> bool {
 /// Filesystem capabilities confined to `root`.
 pub struct FsCaps {
     root: PathBuf,
+    /// Optional snapshot store for undo support. When set, `cap.fs.write`
+    /// auto-snapshots the file before overwriting it.
+    snapshot_store: Option<Arc<SnapshotStore>>,
 }
 
 impl FsCaps {
     /// Create an `cap.fs` component rooted at `root`. All paths are resolved
     /// relative to it and may not escape it.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            snapshot_store: None,
+        }
+    }
+
+    /// Attach a snapshot store for automatic undo snapshots.
+    pub fn with_snapshots(mut self, store: Arc<SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
     }
 
     /// Resolve a caller-supplied relative path against the root, refusing
@@ -186,6 +201,18 @@ impl CapabilityProvider for FsCaps {
                     "required": ["query", "path"]
                 }),
             },
+            Capability {
+                id: "cap.fs.undo".into(),
+                summary: "restore a file from its most recent snapshot".into(),
+                args_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "path to the file to restore" },
+                        "snapshot_id": { "type": "string", "description": "optional specific snapshot id (default: latest)" }
+                    },
+                    "required": ["path"]
+                }),
+            },
         ]
     }
 
@@ -202,6 +229,12 @@ impl CapabilityProvider for FsCaps {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| ExecError(format!("mkdir: {e}")))?;
+                }
+                // Auto-snapshot before overwriting.
+                if let Some(store) = &self.snapshot_store {
+                    if path.exists() {
+                        store.snapshot(&path).map_err(ExecError)?;
+                    }
                 }
                 std::fs::write(&path, content).map_err(|e| ExecError(format!("write: {e}")))?;
                 Ok(serde_json::json!({ "bytes": content.len() }))
@@ -275,6 +308,31 @@ impl CapabilityProvider for FsCaps {
                     }
                 }
                 Ok(serde_json::json!({ "matches": results }))
+            }
+            "cap.fs.undo" => {
+                let store = self.snapshot_store.as_ref().ok_or_else(|| {
+                    ExecError("snapshot store not configured (no `snapshot_root` setting)".into())
+                })?;
+                if args.get("_list").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let metas = store.list(&path).map_err(ExecError)?;
+                    let snapshots: Vec<Value> = metas
+                        .into_iter()
+                        .map(|m| serde_json::json!({ "id": m.id, "timestamp": m.timestamp, "path": m.path }))
+                        .collect();
+                    return Ok(serde_json::json!({ "snapshots": snapshots }));
+                }
+                let snapshot_id = args.get("snapshot_id").and_then(|v| v.as_str());
+                let result = match snapshot_id {
+                    Some(id) => {
+                        store.restore(&path, id).map_err(ExecError)?;
+                        serde_json::json!({ "restored": path.to_string_lossy(), "snapshot_id": id })
+                    }
+                    None => {
+                        let id = store.restore_latest(&path).map_err(ExecError)?;
+                        serde_json::json!({ "restored": path.to_string_lossy(), "snapshot_id": id })
+                    }
+                };
+                Ok(result)
             }
             other => Err(ExecError(format!("cap.fs has no `{other}`"))),
         }

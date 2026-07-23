@@ -26,6 +26,7 @@ pub mod fs;
 pub mod http;
 pub mod shell;
 pub mod skill;
+pub mod snapshot;
 pub mod state;
 pub mod time;
 
@@ -34,10 +35,12 @@ pub use fs::FsCaps;
 pub use http::HttpCaps;
 pub use shell::ShellCaps;
 pub use skill::SkillCaps;
+pub use snapshot::SnapshotStore;
 pub use state::StateCaps;
 pub use time::TimeCaps;
 
 use pan_core::components::{ComponentError, ComponentRegistry};
+use std::sync::Arc;
 
 /// Register the capability components this crate provides into `registry`, so an
 /// `Agent.toml` `[caps.enable]` list can build them by id.
@@ -63,7 +66,12 @@ pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), Com
                 id: cfg.id.clone(),
                 reason: "cap.fs requires a `root` setting".into(),
             })?;
-        Ok(Box::new(FsCaps::new(root)))
+        let mut caps = FsCaps::new(root);
+        // Optional snapshot store for undo support.
+        if let Some(snap_root) = cfg.settings.get("snapshot_root").and_then(|s| s.as_str()) {
+            caps = caps.with_snapshots(Arc::new(SnapshotStore::new(snap_root)));
+        }
+        Ok(Box::new(caps))
     })?;
     registry.register_capability_provider("cap.shell", |_cfg| Ok(Box::new(ShellCaps::new())))?;
     registry.register_capability_provider("cap.http", |_cfg| Ok(Box::new(HttpCaps::new())))?;
