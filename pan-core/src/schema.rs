@@ -302,6 +302,30 @@ pub trait ContextCompactor: Send + Sync {
     async fn compact(&self, ctx: &Context, budget: &ContextBudget) -> Context;
 }
 
+/// A goal evaluator checks whether a completed span actually satisfied
+/// its goal. This is a reflection step: after the provider concludes
+/// `Achieved`, an evaluator can decide the result was unsatisfactory and
+/// trigger a retry with context explaining why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalEval {
+    Satisfied,
+    Unsatisfied { reason: String },
+    CannotJudge { reason: String },
+}
+
+#[async_trait::async_trait]
+pub trait GoalEvaluator: Send + Sync {
+    fn id(&self) -> &str;
+
+    /// Evaluate whether `goal` was satisfied by the span's outcome.
+    async fn evaluate(
+        &self,
+        goal: &Goal,
+        ctx: &Context,
+        report: &crate::loop_engine::RunReport,
+    ) -> GoalEval;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

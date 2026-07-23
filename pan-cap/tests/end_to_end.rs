@@ -154,6 +154,7 @@ async fn a_provider_driving_the_loop_writes_a_real_file() {
         stall_detector: None,
         compactor: None,
         context_budget: None,
+        evaluator: None,
     };
     let mut obs = Once(Some(Goal {
         id: "g".into(),

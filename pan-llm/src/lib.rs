@@ -24,6 +24,7 @@
 
 pub mod anthropic;
 pub mod compactor;
+pub mod evaluator;
 pub mod http;
 pub mod openai;
 

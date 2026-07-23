@@ -309,6 +309,7 @@ impl<'a> App<'a> {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
 
         let mut obs = Once(Some(goal));

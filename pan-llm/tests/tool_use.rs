@@ -154,6 +154,7 @@ async fn the_model_calls_a_tool_sees_the_result_and_answers() {
         stall_detector: None,
         compactor: None,
         context_budget: None,
+        evaluator: None,
     };
 
     let goal = Goal {

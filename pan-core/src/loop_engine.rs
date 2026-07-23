@@ -28,8 +28,8 @@ use crate::events::{EventKind, EventStream};
 use crate::invoker::PipelineInvoker;
 use crate::pipeline::{Pipeline, PipelineError};
 use crate::schema::{
-    ActionIntent, Context, ContextBudget, ContextCompactor, Decision, Fragment, Goal, Outcome,
-    Provider, Scope,
+    ActionIntent, Context, ContextBudget, ContextCompactor, Decision, Fragment, Goal, GoalEval,
+    GoalEvaluator, Outcome, Provider, Scope,
 };
 
 /// The context channel on which the loop folds executed-capability results back
@@ -102,6 +102,8 @@ pub enum RunEnd {
     StepLimit,
     /// A hardware safety veto or external abort signal fired during the span.
     Vetoed { reason: String },
+    /// The goal was Achieved but the evaluator found the result unsatisfactory.
+    Unsatisfied { reason: String },
     /// The observation stream ended without a conclusion.
     StreamExhausted,
 }
@@ -291,6 +293,10 @@ pub struct Loop<'a> {
     pub compactor: Option<&'a dyn ContextCompactor>,
     /// Token budget for the working context. Ignored when `compactor` is None.
     pub context_budget: Option<ContextBudget>,
+    /// Optional goal evaluator. When set, runs after a `Conclude(Achieved)`
+    /// to check whether the result is actually satisfactory. If not, the span
+    /// ends with [`RunEnd::Unsatisfied`].
+    pub evaluator: Option<&'a dyn GoalEvaluator>,
 }
 
 impl<'a> Loop<'a> {
@@ -381,7 +387,21 @@ impl<'a> Loop<'a> {
                 let (outcome, tool_results) = self.enact(&decision, &mut report).await;
 
                 // A terminal conclusion ends the span, whatever else was enacted.
-                if let Some(o @ (Outcome::Achieved | Outcome::Abandoned)) = outcome {
+                if let Some(o) = outcome {
+                    if o == Outcome::Achieved {
+                        // Run goal evaluator if configured.
+                        if let Some(evaluator) = self.evaluator {
+                            let eval = evaluator.evaluate(&snapshot, &working_ctx, &report).await;
+                            if let GoalEval::Unsatisfied { reason } = eval {
+                                self.events.emit(EventKind::RunConcluded {
+                                    goal_id: current.id.clone(),
+                                    outcome: o,
+                                });
+                                report.end = Some(RunEnd::Unsatisfied { reason });
+                                return report;
+                            }
+                        }
+                    }
                     self.events.emit(EventKind::RunConcluded {
                         goal_id: current.id.clone(),
                         outcome: o,
@@ -642,6 +662,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Once(Some(goal("g1", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -708,6 +729,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Superseding {
             first: Some(goal("g", 0)),
@@ -759,6 +781,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -861,6 +884,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = SupersedeAfter {
             first: Some(goal("g", 0)),
@@ -970,6 +994,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;
@@ -1023,6 +1048,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Once(Some(goal("g", 0)));
         let report = lp.run_span(&mut obs, &Context::default()).await;

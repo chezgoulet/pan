@@ -85,6 +85,7 @@ root = "{root}"
         stall_detector: None,
         compactor: None,
         context_budget: None,
+        evaluator: None,
     };
 
     // Drive one span with the goal the rule reacts to.

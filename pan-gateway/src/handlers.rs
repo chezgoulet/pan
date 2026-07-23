@@ -378,6 +378,7 @@ async fn run_agent_streaming(
         stall_detector: None,
         compactor: None,
         context_budget: None,
+        evaluator: None,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -452,6 +453,7 @@ async fn run_agent(
         stall_detector: None,
         compactor: None,
         context_budget: None,
+        evaluator: None,
     };
     let mut obs = Once(Some(goal));
     let report = lp.run_span(&mut obs, &ctx).await;
@@ -558,6 +560,7 @@ fn to_gateway_response(report: RunReport) -> GatewayResponse {
             Some(RunEnd::StepLimit) => "step_limit".into(),
             Some(RunEnd::Abandoned) => "abandoned".into(),
             Some(RunEnd::Vetoed { .. }) => "vetoed".into(),
+            Some(RunEnd::Unsatisfied { .. }) => "unsatisfied".into(),
             Some(RunEnd::StreamExhausted) => "exhausted".into(),
             None => "unknown".into(),
         },

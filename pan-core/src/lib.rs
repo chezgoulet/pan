@@ -137,6 +137,7 @@ mod tests {
             stall_detector: None,
             compactor: None,
             context_budget: None,
+            evaluator: None,
         };
         let mut obs = Once(Some(Goal {
             id: "run-1".into(),
@@ -255,6 +256,7 @@ mod tests {
                 stall_detector: None,
                 compactor: None,
                 context_budget: None,
+                evaluator: None,
             };
             let mut obs = Once(Some(Goal {
                 id: "g".into(),
