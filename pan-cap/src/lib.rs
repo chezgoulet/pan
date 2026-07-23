@@ -24,6 +24,7 @@
 pub mod format;
 pub mod fs;
 pub mod http;
+pub mod lsp;
 pub mod shell;
 pub mod skill;
 pub mod snapshot;
@@ -33,6 +34,7 @@ pub mod time;
 pub use format::FormatCaps;
 pub use fs::FsCaps;
 pub use http::HttpCaps;
+pub use lsp::LspCaps;
 pub use shell::ShellCaps;
 pub use skill::SkillCaps;
 pub use snapshot::SnapshotStore;
@@ -77,6 +79,7 @@ pub fn register_builtin_caps(registry: &mut ComponentRegistry) -> Result<(), Com
     registry.register_capability_provider("cap.http", |_cfg| Ok(Box::new(HttpCaps::new())))?;
     registry.register_capability_provider("cap.time", |_cfg| Ok(Box::new(TimeCaps::new())))?;
     registry.register_capability_provider("cap.format", |_cfg| Ok(Box::new(FormatCaps::new())))?;
+    registry.register_capability_provider("cap.lsp", |_cfg| Ok(Box::new(LspCaps::new())))?;
     registry.register_capability_provider("cap.skill", |cfg| {
         let root = cfg
             .settings
