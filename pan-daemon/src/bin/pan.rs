@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use pan_daemon::conformance::check_fixtures;
 use pan_daemon::server::serve_loopback;
@@ -220,7 +221,7 @@ async fn run_tui_cmd(args: &[String]) -> ExitCode {
     };
     let registry = pan_agent::builtin::builtin_registry();
     let is_code = args.iter().any(|a| a == "--code");
-    let mut agent = match pan_agent::assemble(&manifest, &registry) {
+    let agent = match pan_agent::assemble(&manifest, &registry) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("pan tui: {e}");
@@ -232,7 +233,7 @@ async fn run_tui_cmd(args: &[String]) -> ExitCode {
     } else {
         None
     };
-    if let Err(e) = pan_tui::run_tui(&mut agent, plan_governor).await {
+    if let Err(e) = pan_tui::run_tui(Arc::new(agent), plan_governor).await {
         eprintln!("pan tui: {e}");
         return ExitCode::FAILURE;
     }

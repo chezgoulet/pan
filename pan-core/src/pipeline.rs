@@ -172,7 +172,7 @@ impl Governor for AllowAll {
 /// origin), not in the core: this type is the mechanism, the grant map is the
 /// policy. That keeps the core policy-free while making the governor the single,
 /// origin-aware safety boundary the buildout depends on.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ScopedGovernor {
     grants: std::collections::HashMap<String, Vec<String>>,
 }

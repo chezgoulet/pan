@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -15,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 
 use pan_agent::AssembledAgent;
 use pan_core::events::{EventStream, MemorySink};
-use pan_core::loop_engine::{Loop, Once};
+use pan_core::loop_engine::{Loop, Once, RunReport};
 use pan_core::pipeline::{AllowAll, EffectRequest, Pipeline, ScopedGovernor};
 use pan_core::schema::{Context, Goal, Trigger, Value};
 
@@ -40,7 +41,7 @@ struct ToolEvent {
 /// Run the TUI. Accepts an assembled agent (build mode, full grants) and
 /// optionally a plan agent (stripped grants). Tab toggles between modes.
 pub async fn run_tui(
-    build_agent: &mut AssembledAgent,
+    build_agent: Arc<AssembledAgent>,
     plan_governor: Option<ScopedGovernor>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
@@ -72,7 +73,7 @@ pub async fn run_tui(
 
     let mut app = App::new(build_agent, plan_governor, veto_tx);
 
-    // Main event loop.
+    // Main event loop — races key events, streaming tokens, span completion.
     loop {
         terminal.draw(|f| app.render(f))?;
 
@@ -80,6 +81,25 @@ pub async fn run_tui(
             Some(event) = key_rx.recv() => {
                 if app.handle_key(event).await? {
                     break; // user quit
+                }
+            }
+            // Streaming tokens from the active span.
+            Some(token) = async {
+                app.token_rx.as_mut()?.recv().await
+            } => {
+                if let Some(msg_idx) = app.msg_idx {
+                    if msg_idx < app.messages.len() {
+                        app.messages[msg_idx].content.push_str(&token);
+                        app.token_count += 1;
+                    }
+                }
+            }
+            // Span completed — finalize.
+            result = async {
+                app.completion_rx.as_mut()?.await.ok()
+            } => {
+                if let Some(report) = result {
+                    app.finalize_span(report).await;
                 }
             }
         }
@@ -90,8 +110,8 @@ pub async fn run_tui(
     Ok(())
 }
 
-struct App<'a> {
-    agent: &'a AssembledAgent,
+struct App {
+    agent: Arc<AssembledAgent>,
     plan_governor: Option<ScopedGovernor>,
     mode: Mode,
     messages: Vec<Message>,
@@ -106,11 +126,19 @@ struct App<'a> {
     started_at: Option<Instant>,
     token_count: u64,
     message_count: u64,
+    /// Index of the current assistant message being streamed.
+    msg_idx: Option<usize>,
+    /// Token receiver from the active span.
+    token_rx: Option<mpsc::UnboundedReceiver<String>>,
+    /// Completion signal from the active span task.
+    completion_rx: Option<tokio::sync::oneshot::Receiver<RunReport>>,
+    /// Handle to the spawned span task.
+    _span_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl<'a> App<'a> {
+impl App {
     fn new(
-        agent: &'a AssembledAgent,
+        agent: Arc<AssembledAgent>,
         plan_governor: Option<ScopedGovernor>,
         veto_tx: watch::Sender<bool>,
     ) -> Self {
@@ -130,6 +158,10 @@ impl<'a> App<'a> {
             started_at: None,
             token_count: 0,
             message_count: 0,
+            msg_idx: None,
+            token_rx: None,
+            completion_rx: None,
+            _span_task: None,
         }
     }
 
@@ -280,83 +312,81 @@ impl<'a> App<'a> {
             },
         };
 
-        // Destructure self to avoid borrow conflicts across the async span.
-        let agent = &self.agent;
-        let gov: &ScopedGovernor = match self.mode {
-            Mode::Build => &agent.governor,
-            Mode::Plan => self.plan_governor.as_ref().unwrap_or(&agent.governor),
-        };
+        // Create channels for streaming.
+        let (token_tx, token_rx) = mpsc::unbounded_channel();
+        let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
 
-        // Build pipeline and loop.
-        let memory_sink = MemorySink::new();
-        let event_sink_handle = memory_sink.handle();
-        let mut event_stream = EventStream::spawn(memory_sink);
-        let registry = agent.toolbox.registry();
-        let pipeline = Pipeline {
-            registry: &registry,
-            governor: gov,
-            executor: &agent.toolbox,
-            events: &event_stream,
-            hooks: vec![],
-        };
-        let (token_tx, mut token_rx) = mpsc::unbounded_channel();
-        let lp = Loop {
-            provider: agent.provider.as_ref(),
-            pipeline: &pipeline,
-            events: &event_stream,
-            scope: agent.scope.clone(),
-            token_tx: Some(token_tx),
-            veto_source: pan_core::loop_engine::NO_VETO,
-            stall_detector: None,
-            compactor: None,
-            context_budget: None,
-            evaluator: None,
-        };
-
-        let mut obs = Once(Some(goal));
         let msg_idx = self.messages.len();
         self.messages.push(Message {
             role: "assistant".into(),
             content: String::new(),
             timestamp: Self::timestamp(),
         });
+        self.msg_idx = Some(msg_idx);
+        self.token_rx = Some(token_rx);
+        self.completion_rx = Some(complete_rx);
 
-        // Run the span — tokens arrive via the channel while we poll the future.
-        // We can't use tokio::select! here due to borrow conflicts, so we read
-        // tokens after the span completes (they're already buffered in the channel).
-        let report = lp.run_span(&mut obs, &Context::default()).await;
-        event_stream.shutdown();
+        // Clone what the background task needs.
+        let agent = self.agent.clone();
+        let plan_gov = self.plan_governor.clone();
+        let mode = self.mode;
+        let event_sink_handle: std::sync::Arc<std::sync::Mutex<Vec<_>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let event_sink_handle_clone = event_sink_handle.clone();
 
-        // Drain buffered tokens.
-        while let Ok(token) = token_rx.try_recv() {
-            self.messages[msg_idx].content.push_str(&token);
-            self.token_count += token.split_whitespace().count() as u64;
-        }
+        let handle = tokio::spawn(async move {
+            let memory_sink = MemorySink::new();
+            let handle = memory_sink.handle();
+            let mut event_stream = EventStream::spawn(memory_sink);
+            let registry = agent.toolbox.registry();
+            let actual_gov: &ScopedGovernor = match mode {
+                Mode::Build => &agent.governor,
+                Mode::Plan => plan_gov.as_ref().unwrap_or(&agent.governor),
+            };
+            let pipeline = Pipeline {
+                registry: &registry,
+                governor: actual_gov,
+                executor: &agent.toolbox,
+                events: &event_stream,
+                hooks: vec![],
+            };
+            let lp = Loop {
+                provider: agent.provider.as_ref(),
+                pipeline: &pipeline,
+                events: &event_stream,
+                scope: agent.scope.clone(),
+                token_tx: Some(token_tx),
+                veto_source: pan_core::loop_engine::NO_VETO,
+                stall_detector: None,
+                compactor: None,
+                context_budget: None,
+                evaluator: None,
+            };
 
-        // Collect tool events from the MemorySink.
-        for ev in event_sink_handle.lock().unwrap().iter() {
-            match &ev.kind {
-                pan_core::events::EventKind::Effected { capability, .. } => {
-                    self.tool_events.push(ToolEvent {
-                        label: format!("[ok] {}", capability),
-                        done: true,
-                        error: false,
-                    });
-                }
-                pan_core::events::EventKind::PluginError { plugin, .. } => {
-                    self.tool_events.push(ToolEvent {
-                        label: format!("[err] {}", plugin),
-                        done: true,
-                        error: true,
-                    });
-                }
-                _ => {}
-            }
-        }
+            let mut obs = Once(Some(goal));
+            let report = lp.run_span(&mut obs, &Context::default()).await;
+            event_stream.shutdown();
+
+            // Store tool events for finalization.
+            let events: Vec<_> = handle.lock().unwrap().iter().cloned().collect();
+            *event_sink_handle_clone.lock().unwrap() = events;
+
+            let _ = complete_tx.send(report);
+        });
+        self._span_task = Some(handle);
+    }
+
+    async fn finalize_span(&mut self, report: RunReport) {
+        self.msg_idx = None;
+        self.token_rx = None;
+        self.completion_rx = None;
 
         // Update the assistant message with the full report expressed content.
         if !report.expressed.is_empty() {
-            self.messages[msg_idx].content = report.expressed.join("\n");
+            let last_assistant = self.messages.iter().rposition(|m| m.role == "assistant");
+            if let Some(idx) = last_assistant {
+                self.messages[idx].content = report.expressed.join("\n");
+            }
         }
 
         self.started_at = None;
