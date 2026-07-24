@@ -329,12 +329,7 @@ fn parse_base(base: &str, path: &str) -> Result<Target, String> {
 
 fn build_get_request(host: &str, full_path: &str) -> String {
     format!(
-        "GET {full_path} HTTP/1.0\r\n\
-         Host: {host}\r\n\
-         User-Agent: pan/{}\r\n\
-         Connection: close\r\n\
-         Accept: */*\r\n\
-         \r\n",
+        "GET {full_path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: pan/{}\r\nConnection: close\r\nAccept: */*\r\n\r\n",
         env!("CARGO_PKG_VERSION"),
     )
 }
