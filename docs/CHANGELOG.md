@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 (2026-07-23)
+
+### Fixed
+- `build_request_ex` (POST) and `build_get_request` (GET) now include a
+  `User-Agent: pan/{version}` header — required by GitHub's REST API (affected
+  `pan update` and version check) and expected by many API gateways.
+
 ## 0.1.2 (2026-07-23)
 
 ### Fixed
