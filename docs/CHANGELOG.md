@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.1 (2026-07-23)
+
+### Added
+- `pan update` subcommand — downloads and atomically replaces the current binary
+  with the latest GitHub release
+- Non-blocking version check on `pan serve`/`run`/`gateway`/`tui` startup —
+  alerts when a newer release is available
+- `get_bytes_async` / `get_json_async` HTTP GET helpers in `pan-llm::http`
+
+### Fixed
+- `pan tui --code <Agent.toml>` argument parsing — `--code` flag is no longer
+  consumed as the Agent.toml path
+
+### Docs
+- Comprehensive README with quick install, subcommands, and architecture
+- GitHub release install method in INSTALL.md
+- `install.sh` — POSIX install script for Linux x86_64
+- `examples/agents/pan.toml` — full-capability example agent
+
 ## 0.1.0 (2026-07-23)
 
 ### Added
