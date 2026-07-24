@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.7 (2026-07-24)
+
+### Fixed
+- `build_get_request` no longer uses line-continuation characters that introduced
+  leading spaces on HTTP header lines. Some CDNs reject this obsolete fold, which
+  caused `pan update` to fail with "malformed HTTP response" on binary downloads.
+
+### CI
+- `release` job triggered on `v*` tags: runs all checks (fmt, clippy, test,
+  verify.sh) then builds and creates a GitHub release — no local build needed.
+- `check` job skips tag pushes to avoid double work.
+- Both jobs use `actions-rust-lang/setup-rust-toolchain` and `rust-cache`.
+
 ## 0.1.6 (2026-07-24)
 
 ### Fixed
