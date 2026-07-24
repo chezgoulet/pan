@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 (2026-07-23)
+
+### Fixed
+- Reconstructed assistant tool-call messages no longer include `"content": null`
+  — some providers (OpenCode Go, DeepSeek) reject null content when `tool_calls`
+  are present. The `content` key is now omitted entirely, matching OpenAI spec.
+
+### Tests
+- New `assistant_tool_call_omits_null_content_in_serialized_json` regression test
+- `transcript_reconstructs_the_tool_exchange` now asserts no `content` key
+
 ## 0.1.1 (2026-07-23)
 
 ### Added
