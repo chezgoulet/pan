@@ -208,7 +208,6 @@ fn replay_exchange(body: &str) -> Option<(Value, Value)> {
 
     let assistant = serde_json::json!({
         "role": "assistant",
-        "content": Value::Null,
         "tool_calls": [{
             "id": id,
             "type": "function",
@@ -454,6 +453,12 @@ mod tests {
             .contains("6 times 7"));
         // The reconstructed assistant tool-call carries the sanitized name + args.
         assert_eq!(messages[2]["role"], "assistant");
+        // Must omit `content` when `tool_calls` is present — some providers
+        // (OpenCode Go, DeepSeek, etc.) reject null content.
+        assert!(
+            messages[2].get("content").is_none(),
+            "assistant message must not have a content key when tool_calls are present"
+        );
         assert_eq!(
             messages[2]["tool_calls"][0]["function"]["name"],
             "cap_compute"
@@ -481,5 +486,29 @@ mod tests {
         );
         assert_eq!(tool["tool_call_id"], "call_9");
         assert!(tool["content"].as_str().unwrap().contains("rejected"));
+    }
+
+    #[test]
+    fn assistant_tool_call_omits_null_content_in_serialized_json() {
+        let body = serde_json::json!({
+            "capability": "cap.state.get",
+            "correlation": "call_x",
+            "args": { "key": "name" },
+            "result": { "value": "Pan" }
+        })
+        .to_string();
+        let (assistant, _tool) = replay_exchange(&body).unwrap();
+        // The "content" key must not be present at all.
+        assert!(
+            assistant.get("content").is_none(),
+            "assistant message must omit content when tool_calls are present"
+        );
+        // Also verify the serialized JSON string — some providers reject
+        // raw `null` values even when the key is present.
+        let json = assistant.to_string();
+        assert!(
+            !json.contains(r#""content":null"#),
+            "serialized assistant JSON must not contain \"content\":null: {json}"
+        );
     }
 }
