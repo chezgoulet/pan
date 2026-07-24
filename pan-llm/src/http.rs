@@ -313,6 +313,135 @@ fn parse_base(base: &str, path: &str) -> Result<Target, String> {
 }
 
 // ---------------------------------------------------------------------------
+// GET request (public, for version check and binary download)
+// ---------------------------------------------------------------------------
+
+fn build_get_request(host: &str, full_path: &str) -> String {
+    format!(
+        "GET {full_path} HTTP/1.0\r\n\
+         Host: {host}\r\n\
+         Connection: close\r\n\
+         Accept: */*\r\n\
+         \r\n"
+    )
+}
+
+/// Find the `\r\n\r\n` header/body boundary in raw bytes.
+fn split_http_response(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    for i in 0..bytes.len().saturating_sub(4) {
+        if bytes[i..].starts_with(b"\r\n\r\n") {
+            return Some((&bytes[..i], &bytes[i + 4..]));
+        }
+    }
+    None
+}
+
+/// Extract the `Location` header value from an HTTP response head.
+fn parse_location(head: &str) -> Option<&str> {
+    for line in head.lines() {
+        if line.to_ascii_lowercase().starts_with("location:") {
+            return line.split_once(':').map(|x| x.1.trim());
+        }
+    }
+    None
+}
+
+enum BytesResult {
+    Body(Vec<u8>),
+    Redirect(String),
+}
+
+/// One-shot HTTP GET returning raw bytes or a redirect target.
+async fn get_bytes_once(url: &str, timeout: Duration) -> Result<BytesResult, String> {
+    let target = parse_base(url, "")?;
+    let request = build_get_request(&target.host, &target.full_path);
+    let raw = async_raw_exchange(&target, timeout, request.as_bytes()).await?;
+    let (head_bytes, body) =
+        split_http_response(&raw).ok_or_else(|| "malformed HTTP response".to_string())?;
+    let head_str =
+        std::str::from_utf8(head_bytes).map_err(|e| format!("bad response headers: {e}"))?;
+    let status_line = head_str.lines().next().unwrap_or("");
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    if (300..400).contains(&code) {
+        if let Some(loc) = parse_location(head_str) {
+            return Ok(BytesResult::Redirect(loc.to_string()));
+        }
+        return Err(format!("HTTP {code}: redirect with no Location"));
+    }
+    if !(200..300).contains(&code) {
+        let preview = String::from_utf8_lossy(&body[..body.len().min(200)]);
+        return Err(format!("HTTP {code}: {preview}"));
+    }
+    Ok(BytesResult::Body(body.to_vec()))
+}
+
+/// Async raw (bytes) GET exchange, skipping the `String` conversion that would
+/// corrupt binary bodies.
+async fn async_raw_exchange(
+    target: &Target,
+    timeout: Duration,
+    request: &[u8],
+) -> Result<Vec<u8>, String> {
+    match &target.scheme {
+        Scheme::Http => {
+            let mut stream = async_connect(&target.host, target.port, timeout).await?;
+            stream
+                .write_all(request)
+                .await
+                .map_err(|e| format!("send: {e}"))?;
+            async_read_body(&mut stream, timeout).await
+        }
+        Scheme::Https => {
+            use tokio_rustls::TlsConnector;
+            let config = tls_config()?;
+            let server_name = rustls::pki_types::ServerName::try_from(target.host.clone())
+                .map_err(|_| format!("invalid TLS server name {:?}", target.host))?;
+            let connector = TlsConnector::from(config);
+            let tcp = async_connect(&target.host, target.port, timeout).await?;
+            let mut tls = connector
+                .connect(server_name, tcp)
+                .await
+                .map_err(|e| format!("tls handshake: {e}"))?;
+            tls.write_all(request)
+                .await
+                .map_err(|e| format!("tls send: {e}"))?;
+            async_read_body(&mut tls, timeout).await
+        }
+    }
+}
+
+/// GET `url` with redirect following (up to 5 hops) and return the body bytes.
+/// Supports `http://` and `https://` URLs.
+pub async fn get_bytes_async(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+    let mut url = url.to_string();
+    for _ in 0..5 {
+        match get_bytes_once(&url, timeout).await? {
+            BytesResult::Body(bytes) => return Ok(bytes),
+            BytesResult::Redirect(loc) => {
+                url = if loc.starts_with('/') {
+                    let base = url.split('/').take(3).collect::<Vec<_>>().join("/");
+                    format!("{base}{loc}")
+                } else {
+                    loc
+                };
+            }
+        }
+    }
+    Err("too many redirects".to_string())
+}
+
+/// GET `url` and parse the response body as JSON.
+/// Typical use: checking the GitHub API for the latest release.
+pub async fn get_json_async(url: &str, timeout: Duration) -> Result<Value, String> {
+    let bytes = get_bytes_async(url, timeout).await?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("bad response JSON: {e}"))
+}
+
+// ---------------------------------------------------------------------------
 // Async transport (tokio-based, non-blocking)
 // ---------------------------------------------------------------------------
 

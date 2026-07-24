@@ -7,16 +7,21 @@
 //! - `pan gateway [--port N] [--agents-dir DIR] [--auth-token T]` — HTTP server + web UI
 //! - `pan tui <Agent.toml>`           — terminal agent UI
 //! - `pan check-conformance`          — validate bundled protocol fixtures
+//! - `pan update`                     — update to the latest GitHub release
 //! - `pan --version` / `pan --help`   — version / usage
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use pan_daemon::conformance::check_fixtures;
 use pan_daemon::server::serve_loopback;
 
 const DEFAULT_PORT: u16 = 40707;
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+const GH_API_LATEST: &str = "https://api.github.com/repos/chezgoulet/pan/releases/latest";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -34,11 +39,24 @@ async fn main() -> ExitCode {
             println!("pan {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        "serve" => run_serve(&args[2..]).await,
-        "run" => run_agent(&args[2..]).await,
-        "gateway" => run_gateway_cmd(&args[2..]).await,
-        "tui" => run_tui_cmd(&args[2..]).await,
+        "serve" => {
+            spawn_version_check();
+            run_serve(&args[2..]).await
+        }
+        "run" => {
+            spawn_version_check();
+            run_agent(&args[2..]).await
+        }
+        "gateway" => {
+            spawn_version_check();
+            run_gateway_cmd(&args[2..]).await
+        }
+        "tui" => {
+            spawn_version_check();
+            run_tui_cmd(&args[2..]).await
+        }
         "check-conformance" => run_check_conformance(),
+        "update" => run_update().await,
         other => {
             eprintln!("pan: unknown subcommand `{other}`");
             print_usage();
@@ -59,6 +77,7 @@ fn print_usage() {
     eprintln!("    pan tui <Agent.toml>         Terminal agent UI");
     eprintln!("    pan tui --code <Agent.toml>    Code agent UI (plan/build modes)");
     eprintln!("    pan check-conformance        Validate protocol fixtures");
+    eprintln!("    pan update                    Update to latest GitHub release");
     eprintln!("    pan --version / --help");
 }
 
@@ -205,7 +224,8 @@ async fn run_gateway_cmd(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------------------
 
 async fn run_tui_cmd(args: &[String]) -> ExitCode {
-    let path = match args.first() {
+    let pos = args.iter().position(|a| a != "--code").unwrap_or(0);
+    let path = match args.get(pos) {
         Some(p) => p,
         None => {
             eprintln!("pan tui: missing <Agent.toml> path");
@@ -267,6 +287,146 @@ fn run_check_conformance() -> ExitCode {
         }
         ExitCode::from(1)
     }
+}
+
+// ---------------------------------------------------------------------------
+// version check (non-blocking)
+// ---------------------------------------------------------------------------
+
+/// Fire off a background check to see if a newer Pan release exists.
+/// Runs once, prints to stderr if one is available, silently ignores errors.
+fn spawn_version_check() {
+    tokio::spawn(async {
+        if let Ok(val) = pan_llm::http::get_json_async(GH_API_LATEST, VERSION_CHECK_TIMEOUT).await {
+            if let Some(tag) = val.get("tag_name").and_then(|v| v.as_str()) {
+                let latest = tag.trim_start_matches('v');
+                if compare_versions(latest, env!("CARGO_PKG_VERSION")) > 0 {
+                    eprintln!("pan: newer version available: {tag}");
+                    eprintln!("pan: run 'pan update' to install it");
+                }
+            }
+        }
+    });
+}
+
+/// Compare two semver version strings. Returns positive if `a > b`,
+/// negative if `a < b`, zero if equal.
+fn compare_versions(a: &str, b: &str) -> i32 {
+    fn parse(v: &str) -> Vec<u64> {
+        v.split('.').filter_map(|s| s.parse().ok()).collect()
+    }
+    let va = parse(a);
+    let vb = parse(b);
+    for i in 0..va.len().max(vb.len()) {
+        let na = va.get(i).copied().unwrap_or(0);
+        let nb = vb.get(i).copied().unwrap_or(0);
+        if na != nb {
+            return if na > nb { 1 } else { -1 };
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// update
+// ---------------------------------------------------------------------------
+
+/// Download the latest release binary from GitHub and replace the current one.
+async fn run_update() -> ExitCode {
+    let current = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pan update: cannot determine current binary path: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let parent = current.parent().unwrap();
+    if !parent.is_dir() {
+        eprintln!("pan update: cannot determine parent directory");
+        return ExitCode::FAILURE;
+    }
+
+    // Quick writability check (fast-fail before download).
+    let test_file = parent.join(".pan-update-test");
+    if std::fs::write(&test_file, b"").is_err() {
+        eprintln!("pan update: no write permission for {}", parent.display());
+        eprintln!("  Try: sudo pan update");
+        eprintln!("  Or download from: https://github.com/chezgoulet/pan/releases");
+        return ExitCode::FAILURE;
+    }
+    let _ = std::fs::remove_file(&test_file);
+
+    eprintln!("pan update: checking for latest release...");
+
+    let json = match pan_llm::http::get_json_async(GH_API_LATEST, UPDATE_TIMEOUT).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("pan update: cannot fetch latest release: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let tag = match json.get("tag_name").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            eprintln!("pan update: unexpected GitHub API response");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let dl_url = format!("https://github.com/chezgoulet/pan/releases/download/{tag}/pan");
+    eprintln!("pan update: downloading {tag}...");
+
+    let bytes = match pan_llm::http::get_bytes_async(&dl_url, UPDATE_TIMEOUT).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("pan update: download failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if bytes.len() < 1_000_000 {
+        eprintln!(
+            "pan update: downloaded file too small ({} bytes) — aborting",
+            bytes.len()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let tmp = current.with_extension("tmp");
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        eprintln!("pan update: write to temp file failed: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        return ExitCode::FAILURE;
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| {
+            eprintln!("pan update: chmod failed: {e}");
+            let _ = std::fs::remove_file(&tmp);
+        })
+        .ok();
+
+    if let Err(e) = std::fs::rename(&tmp, &current) {
+        eprintln!("pan update: rename failed: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        return ExitCode::FAILURE;
+    }
+
+    // Quick sanity: the new binary actually runs.
+    let version_out = match std::process::Command::new(&current)
+        .arg("--version")
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => "unknown version".to_string(),
+    };
+
+    eprintln!("pan update: updated to {tag} ({version_out})");
+    eprintln!("pan update: restart to use the new version");
+    ExitCode::SUCCESS
 }
 
 fn fixtures_dir() -> PathBuf {
