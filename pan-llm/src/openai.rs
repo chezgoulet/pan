@@ -232,6 +232,7 @@ fn replay_exchange(body: &str) -> Option<(Value, Value)> {
 
     let assistant = serde_json::json!({
         "role": "assistant",
+        "content": "",
         "tool_calls": [{
             "id": id,
             "type": "function",
@@ -477,11 +478,11 @@ mod tests {
             .contains("6 times 7"));
         // The reconstructed assistant tool-call carries the sanitized name + args.
         assert_eq!(messages[2]["role"], "assistant");
-        // Must omit `content` when `tool_calls` is present — some providers
-        // (OpenCode Go, DeepSeek, etc.) reject null content.
-        assert!(
-            messages[2].get("content").is_none(),
-            "assistant message must not have a content key when tool_calls are present"
+        // Must use empty string (not null, not absent) for content when
+        // tool_calls are present — matches DeepSeek's own output.
+        assert_eq!(
+            messages[2]["content"], "",
+            "assistant message must have content set to empty string"
         );
         assert_eq!(
             messages[2]["tool_calls"][0]["function"]["name"],
@@ -513,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_tool_call_omits_null_content_in_serialized_json() {
+    fn assistant_tool_call_has_empty_string_content() {
         let body = serde_json::json!({
             "capability": "cap.state.get",
             "correlation": "call_x",
@@ -522,17 +523,21 @@ mod tests {
         })
         .to_string();
         let (assistant, _tool) = replay_exchange(&body).unwrap();
-        // The "content" key must not be present at all.
-        assert!(
-            assistant.get("content").is_none(),
-            "assistant message must omit content when tool_calls are present"
+        // Must use empty string (not null, not absent) — matches DeepSeek's output.
+        assert_eq!(
+            assistant["content"], "",
+            "assistant content must be empty string, not absent or null"
         );
-        // Also verify the serialized JSON string — some providers reject
-        // raw `null` values even when the key is present.
+        // Verify the serialized JSON doesn't contain "content":null.
         let json = assistant.to_string();
         assert!(
             !json.contains(r#""content":null"#),
             "serialized assistant JSON must not contain \"content\":null: {json}"
+        );
+        // Also verify it doesn't omit content entirely.
+        assert!(
+            json.contains(r#""content":""#),
+            "serialized assistant JSON must contain \"content\":\"\": {json}"
         );
     }
 }
