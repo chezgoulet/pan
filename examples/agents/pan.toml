@@ -1,0 +1,44 @@
+[meta]
+name = "pan"
+persona = "assistant"
+
+[persona]
+instruction = "You have access to all capabilities: filesystem, shell, HTTP, state, time, format, LSP, Python skills, and agent delegation."
+provider = "provider.command"
+
+[caps]
+enable = [
+    "cap.fs",
+    "cap.shell",
+    "cap.http",
+    "cap.state",
+    "cap.time",
+    "cap.format",
+    "cap.lsp",
+    "cap.skill",
+    "cap.agent",
+]
+
+[caps.grant]
+fs = true
+shell = true
+http = true
+state = true
+time = true
+format = true
+lsp = true
+skill = true
+agent = true
+
+[caps.settings."cap.state"]
+path = "~/.pan/memory.json"
+
+[caps.settings."cap.fs"]
+root = "~/.pan/fs-root"
+snapshot_root = "~/.pan/snapshots"
+
+[caps.settings."cap.skill"]
+root = "~/.pan/skills"
+
+[caps.settings."cap.agent"]
+agents_dir = "~/.pan/child-agents"

@@ -1,9 +1,35 @@
 # Installing Pan
 
+## From GitHub releases (Linux)
+
+Pre-built binaries are published with each release on
+[GitHub](https://github.com/chezgoulet/pan/releases).
+
+**One-liner** (downloads to `~/.local/bin`):
+
+```sh
+mkdir -p ~/.local/bin && curl -fsSL https://github.com/chezgoulet/pan/releases/latest/download/pan -o ~/.local/bin/pan && chmod +x ~/.local/bin/pan
+```
+
+**Using the install script:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chezgoulet/pan/main/install.sh | sh
+```
+
+The script automatically picks the latest release and installs to `~/.local/bin`.
+Set `PREFIX` to change the install location:
+
+```sh
+PREFIX=/usr/local curl -fsSL https://raw.githubusercontent.com/chezgoulet/pan/main/install.sh | sh
+```
+
+**Platform support:** Linux x86_64. For other platforms, build from source (below).
+
 ## From source
 
 ```sh
-git clone <repo-url>
+git clone https://github.com/chezgoulet/pan.git
 cd pan
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo build --release
@@ -22,11 +48,16 @@ cargo install --path pan-daemon --bin pan
 
 ## Requirements
 
-- **Rust**: 1.75+
-- **Build**: `cargo`, standard Rust toolchain
-- **Python skills** (optional): `python3` on PATH
-- **Skill sandbox** (optional): `bwrap` on PATH (Linux only)
-- **LLM providers** (optional): Ollama, llama.cpp, or OpenAI-compatible endpoint
+| Method | Required |
+|---|---|
+| GitHub release | Linux x86_64, `curl` or `wget` |
+| Build from source | Rust 1.75+, `cargo` |
+| `cargo install` | Rust 1.75+, `cargo` |
+
+**Optional runtime dependencies:**
+- **Python skills**: `python3` on PATH
+- **Skill sandbox**: `bwrap` on PATH (Linux only)
+- **LLM providers**: Ollama, llama.cpp, OpenAI-compatible endpoint, or Anthropic API key
 
 ## Subcommands
 
