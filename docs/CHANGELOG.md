@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 (2026-07-24)
+
+### Added
+- `PAN_DEBUG=1` environment variable: dumps the full API request JSON body and
+  response to stderr for diagnosing upstream issues.
+
 ## 0.1.3 (2026-07-23)
 
 ### Fixed
