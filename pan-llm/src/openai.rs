@@ -86,17 +86,41 @@ impl Provider for OpenAiProvider {
             request["tool_choice"] = Value::String("auto".into());
         }
 
+        // Optional debug logging: set PAN_DEBUG=1 to dump request/response.
+        if std::env::var("PAN_DEBUG").is_ok() {
+            eprintln!("--- Pan LLM request ---");
+            eprintln!("POST {} /chat/completions", self.base);
+            eprintln!("{}", serde_json::to_string_pretty(&request).unwrap());
+            eprintln!("--- end request ---");
+        }
+
         // Non-blocking async HTTP (tokio TcpStream + tokio-rustls for TLS).
         // The loop's abandon-path gives cancellation at the future level.
-        match http::post_json_async(
+        let response_result = http::post_json_async(
             &self.base,
             "/chat/completions",
             self.api_key.as_deref(),
             &request,
             HTTP_TIMEOUT,
         )
-        .await
-        {
+        .await;
+
+        if std::env::var("PAN_DEBUG").is_ok() {
+            match &response_result {
+                Ok(body) => {
+                    eprintln!("--- Pan LLM response ---");
+                    eprintln!("{}", serde_json::to_string_pretty(body).unwrap());
+                    eprintln!("--- end response ---");
+                }
+                Err(e) => {
+                    eprintln!("--- Pan LLM error ---");
+                    eprintln!("{e}");
+                    eprintln!("--- end error ---");
+                }
+            }
+        }
+
+        match response_result {
             Ok(response) => {
                 // Track token usage from the API response.
                 if let Some(usage) = response.get("usage") {
