@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 (2026-07-24)
+
+### Fixed
+- Reconstructed assistant tool-call messages now include `"content": ""` (empty
+  string) instead of omitting the key — matches DeepSeek's own output format
+  exactly. Some API gateways reject content being absent after several tool
+  exchange rounds.
+
 ## 0.1.5 (2026-07-24)
 
 ### Fixed
