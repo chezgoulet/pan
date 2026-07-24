@@ -151,10 +151,20 @@ fn build_request_ex(
     request
 }
 
+/// Split raw HTTP response (headers + body) at the header/body boundary,
+/// handling both CRLF (`\r\n\r\n`) and LF-only (`\n\n`) separators.
+fn split_response_body(raw: &str) -> Result<(&str, &str), String> {
+    if let Some((head, body)) = raw.split_once("\r\n\r\n") {
+        return Ok((head, body));
+    }
+    if let Some((head, body)) = raw.split_once("\n\n") {
+        return Ok((head, body));
+    }
+    Err("malformed HTTP response".to_string())
+}
+
 fn parse_response(raw: &str) -> Result<Value, (u16, String)> {
-    let (head, response_body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| (0, "malformed HTTP response".to_string()))?;
+    let (head, response_body) = split_response_body(raw).map_err(|e| (0, e))?;
     let status_line = head.lines().next().unwrap_or("");
     let status = status_line
         .split_whitespace()
@@ -329,11 +339,16 @@ fn build_get_request(host: &str, full_path: &str) -> String {
     )
 }
 
-/// Find the `\r\n\r\n` header/body boundary in raw bytes.
+/// Find the CRLF (`\r\n\r\n`) or LF-only (`\n\n`) header/body boundary in raw bytes.
 fn split_http_response(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     for i in 0..bytes.len().saturating_sub(4) {
         if bytes[i..].starts_with(b"\r\n\r\n") {
             return Some((&bytes[..i], &bytes[i + 4..]));
+        }
+    }
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i..].starts_with(b"\n\n") {
+            return Some((&bytes[..i], &bytes[i + 2..]));
         }
     }
     None
