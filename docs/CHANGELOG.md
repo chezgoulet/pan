@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 (2026-07-24)
+
+### Fixed
+- `split_http_response` now falls back to `\n\n` (LF-only) when `\r\n\r\n` (CRLF)
+  is not found — some CDNs (e.g. GitHub's `objects.githubusercontent.com`) use
+  LF-only line endings. Fixes `pan update` binary download.
+
 ## 0.1.4 (2026-07-24)
 
 ### Added
