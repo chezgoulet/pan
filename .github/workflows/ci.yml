@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, testing]
+    tags: ['v*']
   pull_request:
     branches: [main, testing]
 
@@ -13,27 +14,49 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Format
         run: cargo fmt --all --check
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-
       - name: Build
         run: cargo build --workspace
-
       - name: Test
         run: cargo test --workspace
-
       - name: Compile-fail guards
         working-directory: pan-core
         run: bash verify.sh
+
+  release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Compile-fail guards
+        working-directory: pan-core
+        run: bash verify.sh
+      - name: Build release
+        run: cargo build --release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/pan
+          body_path: docs/CHANGELOG.md
+          fail_on_unmatched_files: true
