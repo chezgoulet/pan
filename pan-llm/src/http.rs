@@ -139,7 +139,8 @@ fn build_request_ex(
 ) -> String {
     let payload = body.to_string();
     let mut request = format!(
-        "POST {full_path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        "POST {full_path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: pan/{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        env!("CARGO_PKG_VERSION"),
         payload.len()
     );
     for (name, value) in extra_headers {
@@ -320,9 +321,11 @@ fn build_get_request(host: &str, full_path: &str) -> String {
     format!(
         "GET {full_path} HTTP/1.0\r\n\
          Host: {host}\r\n\
+         User-Agent: pan/{}\r\n\
          Connection: close\r\n\
          Accept: */*\r\n\
-         \r\n"
+         \r\n",
+        env!("CARGO_PKG_VERSION"),
     )
 }
 
